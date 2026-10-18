@@ -1,0 +1,30 @@
+[transformers] You are using a model of type `fish_omni` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+loading model-00001-of-00008.safetensors
+loading model-00002-of-00008.safetensors
+loading model-00003-of-00008.safetensors
+loading model-00004-of-00008.safetensors
+loading model-00005-of-00008.safetensors
+loading model-00006-of-00008.safetensors
+loading model-00007-of-00008.safetensors
+loading model-00008-of-00008.safetensors
+shards=8 loaded=31333 dequantized_experts=30720
+  backbone.embed_tokens                1
+  backbone.final_norm                  1
+  backbone.full_attn                   60
+  backbone.layer_norm                  80
+  backbone.linear_attn                 270
+  backbone.moe_expert_fp8              30720
+  backbone.moe_router                  40
+  backbone.moe_shared_expert           120
+  backbone.moe_shared_expert_gate      40
+  lm_head                              1
+skipped tower tensors: tower.codebook_embeddings=1, tower.heads=9, tower.residual=126, tower.shared=56
+lm_head sliced to 4097 rows
+backbone loaded in 7.8 s
+tower: 33 tensors from model-00007-of-00008.safetensors
+tower: 159 tensors from model-00008-of-00008.safetensors
+tower loaded in 0.3 s
+engine ready in 12.1 s, peak 67.9 GB
+[0] rows=150 frames=47 stop=eos prefill=1739.2ms (bb 1727.3 / tower 11.8) ttff=1758.3ms step=73.4ms (bb 60.4 / tower 12.4 / sampler 0.6) codec=307.4ms audio=2.18s total=5.50s rtf=2.519
+[1] rows=150 frames=47 stop=eos prefill=868.6ms (bb 857.7 / tower 10.9) ttff=881.6ms step=73.2ms (bb 60.3 / tower 12.4 / sampler 0.5) codec=10.9ms audio=2.18s total=4.32s rtf=1.979
+wrote out/first.wav (47 frames, 2.18 s)

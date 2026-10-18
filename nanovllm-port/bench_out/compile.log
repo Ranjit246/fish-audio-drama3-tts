@@ -1,0 +1,31 @@
+[transformers] You are using a model of type `fish_omni` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+loading model-00001-of-00008.safetensors
+loading model-00002-of-00008.safetensors
+loading model-00003-of-00008.safetensors
+loading model-00004-of-00008.safetensors
+loading model-00005-of-00008.safetensors
+loading model-00006-of-00008.safetensors
+loading model-00007-of-00008.safetensors
+loading model-00008-of-00008.safetensors
+shards=8 loaded=31333 dequantized_experts=30720
+  backbone.embed_tokens                1
+  backbone.final_norm                  1
+  backbone.full_attn                   60
+  backbone.layer_norm                  80
+  backbone.linear_attn                 270
+  backbone.moe_expert_fp8              30720
+  backbone.moe_router                  40
+  backbone.moe_shared_expert           120
+  backbone.moe_shared_expert_gate      40
+  lm_head                              1
+skipped tower tensors: tower.codebook_embeddings=1, tower.heads=9, tower.residual=126, tower.shared=56
+lm_head sliced to 4097 rows
+backbone loaded in 7.8 s
+tower: 33 tensors from model-00007-of-00008.safetensors
+tower: 159 tensors from model-00008-of-00008.safetensors
+tower loaded in 0.3 s
+engine ready in 12.8 s, peak 67.9 GB
+[0] rows=150 frames=47 stop=eos prefill=4060.5ms (bb 4048.7 / tower 11.8) ttff=4079.6ms step=91.5ms (bb 78.6 / tower 12.3 / sampler 0.6) codec=203.2ms audio=2.18s total=8.56s rtf=3.924
+[1] rows=150 frames=47 stop=eos prefill=961.1ms (bb 950.1 / tower 11.0) ttff=974.1ms step=76.1ms (bb 63.2 / tower 12.4 / sampler 0.5) codec=10.1ms audio=2.18s total=4.55s rtf=2.085
+[2] rows=150 frames=47 stop=eos prefill=969.6ms (bb 958.6 / tower 11.0) ttff=982.5ms step=76.0ms (bb 63.1 / tower 12.4 / sampler 0.5) codec=10.1ms audio=2.18s total=4.55s rtf=2.086
+wrote out/first_compiled.wav (47 frames, 2.18 s)

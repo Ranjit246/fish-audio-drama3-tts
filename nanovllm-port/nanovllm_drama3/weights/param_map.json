@@ -1,0 +1,739 @@
+{
+ "num_tensors": 62245,
+ "classes": {
+  "backbone.embed_tokens": 1,
+  "backbone.final_norm": 1,
+  "backbone.full_attn": 60,
+  "backbone.layer_norm": 80,
+  "backbone.linear_attn": 270,
+  "backbone.moe_expert_fp8": 30720,
+  "backbone.moe_expert_scale": 30720,
+  "backbone.moe_router": 40,
+  "backbone.moe_shared_expert": 120,
+  "backbone.moe_shared_expert_gate": 40,
+  "lm_head": 1,
+  "tower.codebook_embeddings": 1,
+  "tower.heads": 9,
+  "tower.residual": 126,
+  "tower.shared": 56
+ },
+ "patterns": [
+  {
+   "source": "model.language_model.embed_tokens.weight",
+   "class": "backbone.embed_tokens",
+   "target": "model.embed_tokens.weight",
+   "role": "weight",
+   "count": 1,
+   "dtype": "BF16",
+   "shape": [
+    252288,
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.norm.weight",
+   "class": "backbone.final_norm",
+   "target": "model.norm.weight",
+   "role": "weight",
+   "count": 1,
+   "dtype": "BF16",
+   "shape": [
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.self_attn.k_norm.weight",
+   "class": "backbone.full_attn",
+   "target": "model.layers.{layer}.self_attn.k_norm.weight",
+   "role": "weight",
+   "count": 10,
+   "dtype": "BF16",
+   "shape": [
+    256
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.self_attn.k_proj.weight",
+   "class": "backbone.full_attn",
+   "target": "model.layers.{layer}.self_attn.k_proj.weight",
+   "role": "weight",
+   "count": 10,
+   "dtype": "BF16",
+   "shape": [
+    512,
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.self_attn.o_proj.weight",
+   "class": "backbone.full_attn",
+   "target": "model.layers.{layer}.self_attn.o_proj.weight",
+   "role": "weight",
+   "count": 10,
+   "dtype": "BF16",
+   "shape": [
+    2048,
+    4096
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.self_attn.q_norm.weight",
+   "class": "backbone.full_attn",
+   "target": "model.layers.{layer}.self_attn.q_norm.weight",
+   "role": "weight",
+   "count": 10,
+   "dtype": "BF16",
+   "shape": [
+    256
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.self_attn.q_proj.weight",
+   "class": "backbone.full_attn",
+   "target": "model.layers.{layer}.self_attn.q_proj.weight",
+   "role": "weight",
+   "count": 10,
+   "dtype": "BF16",
+   "shape": [
+    8192,
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.self_attn.v_proj.weight",
+   "class": "backbone.full_attn",
+   "target": "model.layers.{layer}.self_attn.v_proj.weight",
+   "role": "weight",
+   "count": 10,
+   "dtype": "BF16",
+   "shape": [
+    512,
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.input_layernorm.weight",
+   "class": "backbone.layer_norm",
+   "target": "model.layers.{layer}.input_layernorm.weight",
+   "role": "weight",
+   "count": 40,
+   "dtype": "BF16",
+   "shape": [
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.post_attention_layernorm.weight",
+   "class": "backbone.layer_norm",
+   "target": "model.layers.{layer}.post_attention_layernorm.weight",
+   "role": "weight",
+   "count": 40,
+   "dtype": "BF16",
+   "shape": [
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.linear_attn.A_log",
+   "class": "backbone.linear_attn",
+   "target": "model.layers.{layer}.linear_attn.A_log",
+   "role": "weight",
+   "count": 30,
+   "dtype": "BF16",
+   "shape": [
+    32
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.linear_attn.conv1d.weight",
+   "class": "backbone.linear_attn",
+   "target": "model.layers.{layer}.linear_attn.conv1d.weight",
+   "role": "weight",
+   "count": 30,
+   "dtype": "BF16",
+   "shape": [
+    8192,
+    1,
+    4
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.linear_attn.dt_bias",
+   "class": "backbone.linear_attn",
+   "target": "model.layers.{layer}.linear_attn.dt_bias",
+   "role": "weight",
+   "count": 30,
+   "dtype": "BF16",
+   "shape": [
+    32
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.linear_attn.in_proj_a.weight",
+   "class": "backbone.linear_attn",
+   "target": "model.layers.{layer}.linear_attn.in_proj_a.weight",
+   "role": "weight",
+   "count": 30,
+   "dtype": "BF16",
+   "shape": [
+    32,
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.linear_attn.in_proj_b.weight",
+   "class": "backbone.linear_attn",
+   "target": "model.layers.{layer}.linear_attn.in_proj_b.weight",
+   "role": "weight",
+   "count": 30,
+   "dtype": "BF16",
+   "shape": [
+    32,
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.linear_attn.in_proj_qkv.weight",
+   "class": "backbone.linear_attn",
+   "target": "model.layers.{layer}.linear_attn.in_proj_qkv.weight",
+   "role": "weight",
+   "count": 30,
+   "dtype": "BF16",
+   "shape": [
+    8192,
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.linear_attn.in_proj_z.weight",
+   "class": "backbone.linear_attn",
+   "target": "model.layers.{layer}.linear_attn.in_proj_z.weight",
+   "role": "weight",
+   "count": 30,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.linear_attn.norm.weight",
+   "class": "backbone.linear_attn",
+   "target": "model.layers.{layer}.linear_attn.norm.weight",
+   "role": "weight",
+   "count": 30,
+   "dtype": "BF16",
+   "shape": [
+    128
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.linear_attn.out_proj.weight",
+   "class": "backbone.linear_attn",
+   "target": "model.layers.{layer}.linear_attn.out_proj.weight",
+   "role": "weight",
+   "count": 30,
+   "dtype": "BF16",
+   "shape": [
+    2048,
+    4096
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.mlp.experts.{expert}.down_proj.weight",
+   "class": "backbone.moe_expert_fp8",
+   "target": "model.layers.{layer}.mlp.experts.{expert}.down_proj.weight",
+   "role": "fp8_weight",
+   "count": 10240,
+   "dtype": "F8_E4M3",
+   "shape": [
+    2048,
+    512
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.mlp.experts.{expert}.gate_proj.weight",
+   "class": "backbone.moe_expert_fp8",
+   "target": "model.layers.{layer}.mlp.experts.{expert}.gate_up_proj.weight",
+   "role": "fp8_weight",
+   "shard_id": 0,
+   "count": 10240,
+   "dtype": "F8_E4M3",
+   "shape": [
+    512,
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.mlp.experts.{expert}.up_proj.weight",
+   "class": "backbone.moe_expert_fp8",
+   "target": "model.layers.{layer}.mlp.experts.{expert}.gate_up_proj.weight",
+   "role": "fp8_weight",
+   "shard_id": 1,
+   "count": 10240,
+   "dtype": "F8_E4M3",
+   "shape": [
+    512,
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.mlp.experts.{expert}.down_proj.weight_scale_inv",
+   "class": "backbone.moe_expert_scale",
+   "target": "model.layers.{layer}.mlp.experts.{expert}.down_proj.weight",
+   "role": "fp8_scale",
+   "count": 10240,
+   "dtype": "F32",
+   "shape": [
+    16,
+    4
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.mlp.experts.{expert}.gate_proj.weight_scale_inv",
+   "class": "backbone.moe_expert_scale",
+   "target": "model.layers.{layer}.mlp.experts.{expert}.gate_up_proj.weight",
+   "role": "fp8_scale",
+   "shard_id": 0,
+   "count": 10240,
+   "dtype": "F32",
+   "shape": [
+    4,
+    16
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.mlp.experts.{expert}.up_proj.weight_scale_inv",
+   "class": "backbone.moe_expert_scale",
+   "target": "model.layers.{layer}.mlp.experts.{expert}.gate_up_proj.weight",
+   "role": "fp8_scale",
+   "shard_id": 1,
+   "count": 10240,
+   "dtype": "F32",
+   "shape": [
+    4,
+    16
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.mlp.gate.weight",
+   "class": "backbone.moe_router",
+   "target": "model.layers.{layer}.mlp.gate.weight",
+   "role": "weight",
+   "count": 40,
+   "dtype": "BF16",
+   "shape": [
+    256,
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.mlp.shared_expert.down_proj.weight",
+   "class": "backbone.moe_shared_expert",
+   "target": "model.layers.{layer}.mlp.shared_expert.down_proj.weight",
+   "role": "weight",
+   "count": 40,
+   "dtype": "BF16",
+   "shape": [
+    2048,
+    512
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.mlp.shared_expert.gate_proj.weight",
+   "class": "backbone.moe_shared_expert",
+   "target": "model.layers.{layer}.mlp.shared_expert.gate_up_proj.weight",
+   "role": "packed",
+   "shard_id": 0,
+   "count": 40,
+   "dtype": "BF16",
+   "shape": [
+    512,
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.mlp.shared_expert.up_proj.weight",
+   "class": "backbone.moe_shared_expert",
+   "target": "model.layers.{layer}.mlp.shared_expert.gate_up_proj.weight",
+   "role": "packed",
+   "shard_id": 1,
+   "count": 40,
+   "dtype": "BF16",
+   "shape": [
+    512,
+    2048
+   ]
+  },
+  {
+   "source": "model.language_model.layers.{layer}.mlp.shared_expert_gate.weight",
+   "class": "backbone.moe_shared_expert_gate",
+   "target": "model.layers.{layer}.mlp.shared_expert_gate.weight",
+   "role": "weight",
+   "count": 40,
+   "dtype": "BF16",
+   "shape": [
+    1,
+    2048
+   ]
+  },
+  {
+   "source": "lm_head.weight",
+   "class": "lm_head",
+   "target": "lm_head.weight",
+   "role": "weight",
+   "count": 1,
+   "dtype": "BF16",
+   "shape": [
+    252288,
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder.codebook_embeddings.weight",
+   "class": "tower.codebook_embeddings",
+   "target": "tower.audio_decoder.codebook_embeddings.weight",
+   "role": "skip",
+   "count": 1,
+   "dtype": "BF16",
+   "shape": [
+    40960,
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.heads.{head}.weight",
+   "class": "tower.heads",
+   "target": "tower.audio_decoder_mtp.heads.{head}.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.layers.{layer}.codebook_embedding.weight",
+   "class": "tower.residual",
+   "target": "tower.audio_decoder_mtp.layers.{layer}.codebook_embedding.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.layers.{layer}.eh_proj.weight",
+   "class": "tower.residual",
+   "target": "tower.audio_decoder_mtp.layers.{layer}.eh_proj.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    2048,
+    4096
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.layers.{layer}.enorm.weight",
+   "class": "tower.residual",
+   "target": "tower.audio_decoder_mtp.layers.{layer}.enorm.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.layers.{layer}.final_layernorm.weight",
+   "class": "tower.residual",
+   "target": "tower.audio_decoder_mtp.layers.{layer}.final_layernorm.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.layers.{layer}.hnorm.weight",
+   "class": "tower.residual",
+   "target": "tower.audio_decoder_mtp.layers.{layer}.hnorm.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.layers.{layer}.transformer_layer.attention.k_norm.weight",
+   "class": "tower.residual",
+   "target": "tower.audio_decoder_mtp.layers.{layer}.transformer_layer.attention.k_norm.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    256
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.layers.{layer}.transformer_layer.attention.q_norm.weight",
+   "class": "tower.residual",
+   "target": "tower.audio_decoder_mtp.layers.{layer}.transformer_layer.attention.q_norm.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    256
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.layers.{layer}.transformer_layer.attention.wo.weight",
+   "class": "tower.residual",
+   "target": "tower.audio_decoder_mtp.layers.{layer}.transformer_layer.attention.wo.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    2048,
+    4096
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.layers.{layer}.transformer_layer.attention.wqkv.weight",
+   "class": "tower.residual",
+   "target": "tower.audio_decoder_mtp.layers.{layer}.transformer_layer.attention.wqkv.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    9216,
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.layers.{layer}.transformer_layer.attention_norm.weight",
+   "class": "tower.residual",
+   "target": "tower.audio_decoder_mtp.layers.{layer}.transformer_layer.attention_norm.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.layers.{layer}.transformer_layer.feed_forward.w1.weight",
+   "class": "tower.residual",
+   "target": "tower.audio_decoder_mtp.layers.{layer}.transformer_layer.feed_forward.w1.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    6144,
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.layers.{layer}.transformer_layer.feed_forward.w2.weight",
+   "class": "tower.residual",
+   "target": "tower.audio_decoder_mtp.layers.{layer}.transformer_layer.feed_forward.w2.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    2048,
+    6144
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.layers.{layer}.transformer_layer.feed_forward.w3.weight",
+   "class": "tower.residual",
+   "target": "tower.audio_decoder_mtp.layers.{layer}.transformer_layer.feed_forward.w3.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    6144,
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp.layers.{layer}.transformer_layer.ffn_norm.weight",
+   "class": "tower.residual",
+   "target": "tower.audio_decoder_mtp.layers.{layer}.transformer_layer.ffn_norm.weight",
+   "role": "skip",
+   "count": 9,
+   "dtype": "BF16",
+   "shape": [
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp_shared.layers.{layer}.eh_proj.weight",
+   "class": "tower.shared",
+   "target": "tower.audio_decoder_mtp_shared.layers.{layer}.eh_proj.weight",
+   "role": "skip",
+   "count": 4,
+   "dtype": "BF16",
+   "shape": [
+    2048,
+    4096
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp_shared.layers.{layer}.enorm.weight",
+   "class": "tower.shared",
+   "target": "tower.audio_decoder_mtp_shared.layers.{layer}.enorm.weight",
+   "role": "skip",
+   "count": 4,
+   "dtype": "BF16",
+   "shape": [
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp_shared.layers.{layer}.final_layernorm.weight",
+   "class": "tower.shared",
+   "target": "tower.audio_decoder_mtp_shared.layers.{layer}.final_layernorm.weight",
+   "role": "skip",
+   "count": 4,
+   "dtype": "BF16",
+   "shape": [
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp_shared.layers.{layer}.hnorm.weight",
+   "class": "tower.shared",
+   "target": "tower.audio_decoder_mtp_shared.layers.{layer}.hnorm.weight",
+   "role": "skip",
+   "count": 4,
+   "dtype": "BF16",
+   "shape": [
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp_shared.layers.{layer}.semantic_embedding.weight",
+   "class": "tower.shared",
+   "target": "tower.audio_decoder_mtp_shared.layers.{layer}.semantic_embedding.weight",
+   "role": "skip",
+   "count": 4,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp_shared.layers.{layer}.transformer_layer.attention.k_norm.weight",
+   "class": "tower.shared",
+   "target": "tower.audio_decoder_mtp_shared.layers.{layer}.transformer_layer.attention.k_norm.weight",
+   "role": "skip",
+   "count": 4,
+   "dtype": "BF16",
+   "shape": [
+    256
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp_shared.layers.{layer}.transformer_layer.attention.q_norm.weight",
+   "class": "tower.shared",
+   "target": "tower.audio_decoder_mtp_shared.layers.{layer}.transformer_layer.attention.q_norm.weight",
+   "role": "skip",
+   "count": 4,
+   "dtype": "BF16",
+   "shape": [
+    256
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp_shared.layers.{layer}.transformer_layer.attention.wo.weight",
+   "class": "tower.shared",
+   "target": "tower.audio_decoder_mtp_shared.layers.{layer}.transformer_layer.attention.wo.weight",
+   "role": "skip",
+   "count": 4,
+   "dtype": "BF16",
+   "shape": [
+    2048,
+    4096
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp_shared.layers.{layer}.transformer_layer.attention.wqkv.weight",
+   "class": "tower.shared",
+   "target": "tower.audio_decoder_mtp_shared.layers.{layer}.transformer_layer.attention.wqkv.weight",
+   "role": "skip",
+   "count": 4,
+   "dtype": "BF16",
+   "shape": [
+    9216,
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp_shared.layers.{layer}.transformer_layer.attention_norm.weight",
+   "class": "tower.shared",
+   "target": "tower.audio_decoder_mtp_shared.layers.{layer}.transformer_layer.attention_norm.weight",
+   "role": "skip",
+   "count": 4,
+   "dtype": "BF16",
+   "shape": [
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp_shared.layers.{layer}.transformer_layer.feed_forward.w1.weight",
+   "class": "tower.shared",
+   "target": "tower.audio_decoder_mtp_shared.layers.{layer}.transformer_layer.feed_forward.w1.weight",
+   "role": "skip",
+   "count": 4,
+   "dtype": "BF16",
+   "shape": [
+    6144,
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp_shared.layers.{layer}.transformer_layer.feed_forward.w2.weight",
+   "class": "tower.shared",
+   "target": "tower.audio_decoder_mtp_shared.layers.{layer}.transformer_layer.feed_forward.w2.weight",
+   "role": "skip",
+   "count": 4,
+   "dtype": "BF16",
+   "shape": [
+    2048,
+    6144
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp_shared.layers.{layer}.transformer_layer.feed_forward.w3.weight",
+   "class": "tower.shared",
+   "target": "tower.audio_decoder_mtp_shared.layers.{layer}.transformer_layer.feed_forward.w3.weight",
+   "role": "skip",
+   "count": 4,
+   "dtype": "BF16",
+   "shape": [
+    6144,
+    2048
+   ]
+  },
+  {
+   "source": "audio_decoder_mtp_shared.layers.{layer}.transformer_layer.ffn_norm.weight",
+   "class": "tower.shared",
+   "target": "tower.audio_decoder_mtp_shared.layers.{layer}.transformer_layer.ffn_norm.weight",
+   "role": "skip",
+   "count": 4,
+   "dtype": "BF16",
+   "shape": [
+    2048
+   ]
+  }
+ ]
+}

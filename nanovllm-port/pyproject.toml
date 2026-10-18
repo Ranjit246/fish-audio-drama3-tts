@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nanovllm-drama3"
+version = "0.0.1"
+description = "nano-vllm runtime for Fish Audio Drama 3 (hybrid GDN+MoE backbone, codebook tower, DAC codec)"
+readme = "PLAN.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # CPU-installable core. On macOS PyPI ships CPU-only torch wheels; on Linux the
+    # default wheel carries CUDA, which is what package 4 wants on the VM.
+    "torch>=2.4",
+    "safetensors>=0.4.3",
+    "huggingface_hub>=0.23",
+    "numpy>=1.26",
+    "pytest>=8",
+    # Needed by the vendored nano-vllm-fusion engine (tokenizer, prefix-cache hash,
+    # progress bar). Pure python / CPU friendly.
+    "transformers>=4.51",
+    "xxhash>=3.4",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+# GPU kernels used by third_party/nano-vllm-fusion/nanovllm/layers/attention.py.
+# Keep optional so `uv sync` works on macOS CPU. flash-attn has to be built from
+# source: `uv pip install flash-attn --no-build-isolation` on the VM.
+gpu = [
+    "triton>=3.0; sys_platform == 'linux'",
+    "flash-attn; sys_platform == 'linux'",
+]
+# Vision extras of the fusion engine (nanovllm/utils/image_processing.py). Not
+# needed for Drama 3 but required if you want `import nanovllm` to execute its
+# package __init__ instead of the lightweight import in nanovllm_drama3.backbone.
+vision = [
+    "pillow>=10",
+    "torchvision>=0.19",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["nanovllm_drama3"]
+
+[tool.hatch.build.targets.sdist]
+include = ["nanovllm_drama3", "tests", "pyproject.toml", "PLAN.md", "FEASIBILITY.md", "VENDORED.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gpu: requires a CUDA device (skipped on CPU-only hosts)",
+    "slow: loads the real codec.pth / downloads a clip (runs by default; deselect with -m 'not slow')",
+]
+addopts = "-ra"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.uv]
+# flash-attn cannot be resolved/built on macOS; never let it leak into the lock
+# unless the gpu extra is explicitly requested on Linux.
+no-build-isolation-package = ["flash-attn"]

@@ -1,0 +1,11 @@
+{
+ "model_dir": "~/.cache/huggingface/hub/models--fishaudio--drama-3/snapshots/b2b5ee998034b2975720906c815e7fb0e9f007bd",
+ "backbone_load_s": 7.779820166000718,
+ "tower_load_s": 0.2555883039985929,
+ "codec_load_s": 1.9517413900011888,
+ "total_load_s": 11.962546965000001,
+ "backbone": "shards=8 loaded=31333 dequantized_experts=30720\n  backbone.embed_tokens                1\n  backbone.final_norm                  1\n  backbone.full_attn                   60\n  backbone.layer_norm                  80\n  backbone.linear_attn                 270\n  backbone.moe_expert_fp8              30720\n  backbone.moe_router                  40\n  backbone.moe_shared_expert           120\n  backbone.moe_shared_expert_gate      40\n  lm_head                              1\nskipped tower tensors: tower.codebook_embeddings=1, tower.heads=9, tower.residual=126, tower.shared=56\nlm_head sliced to 4097 rows",
+ "peak_allocated_gb": 67.88565587997437,
+ "allocated_gb": 67.88565587997437,
+ "reserved_gb": 68.173828125
+}

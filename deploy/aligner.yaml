@@ -1,0 +1,12 @@
+# Forced-aligner stage settings for word timestamps (used with --forced-aligner-config).
+# Copy of vllm_omni/deploy/qwen3_tts_forced_aligner.yaml with a small GPU share:
+# stage 0 (0.70 in d_aligner.yaml) + stage 1 (0.10) + aligner (0.08) = 0.88 of 96 GB.
+forced_aligner:
+  model: Qwen/Qwen3-ForcedAligner-0.6B
+  runner: pooling
+  architecture: Qwen3ASRForcedAlignerForTokenClassification
+  pooling_task: token_classify
+  gpu_memory_utilization: 0.08
+  dtype: bfloat16
+  max_model_len: 4096
+  trust_remote_code: true

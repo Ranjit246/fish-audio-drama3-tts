@@ -1,0 +1,15 @@
+# Tuning step (b): (a) + no prefill-admission batching (new requests never wait
+# up to 100 ms to share a prefill step) + max_num_seqs sized for real peak load.
+base_config: /PATH/TO/site-packages/vllm_omni/deploy/fish_omni.yaml
+connectors:
+  connector_of_shared_memory:
+    extra:
+      codec_chunk_ramp: "2,4,8,16,32"
+      ar_prefill_admission_min_batch: 0
+      ar_prefill_admission_max_wait_ms: 0
+      ar_prefill_admission_min_running: 0
+stages:
+  - stage_id: 0
+    max_num_seqs: 32
+  - stage_id: 1
+    max_num_seqs: 32

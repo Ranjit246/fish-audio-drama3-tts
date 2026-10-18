@@ -1,0 +1,48 @@
+[transformers] You are using a model of type `fish_omni` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+loading model-00001-of-00008.safetensors
+loading model-00002-of-00008.safetensors
+loading model-00003-of-00008.safetensors
+loading model-00004-of-00008.safetensors
+loading model-00005-of-00008.safetensors
+loading model-00006-of-00008.safetensors
+loading model-00007-of-00008.safetensors
+loading model-00008-of-00008.safetensors
+shards=8 loaded=31333 dequantized_experts=30720
+  backbone.embed_tokens                1
+  backbone.final_norm                  1
+  backbone.full_attn                   60
+  backbone.layer_norm                  80
+  backbone.linear_attn                 270
+  backbone.moe_expert_fp8              30720
+  backbone.moe_router                  40
+  backbone.moe_shared_expert           120
+  backbone.moe_shared_expert_gate      40
+  lm_head                              1
+skipped tower tensors: tower.codebook_embeddings=1, tower.heads=9, tower.residual=126, tower.shared=56
+lm_head sliced to 4097 rows
+backbone loaded in 7.8 s
+tower: 33 tensors from model-00007-of-00008.safetensors
+tower: 159 tensors from model-00008-of-00008.safetensors
+tower loaded in 0.3 s
+engine ready in 12.0 s, peak 67.9 GB
+[0] common_voice_en_10119832-common_voice_en_10119840: rows=150 frames=47 stop=eos prefill=1347.6ms (bb 1335.8 / tower 11.8) ttff=1366.5ms step=72.7ms (bb 59.8 / tower 12.3 / sampler 0.6) codec=202.0ms audio=2.18s total=4.96s rtf=2.275
+[1] common_voice_en_10119832-common_voice_en_10119847: rows=150 frames=60 stop=eos prefill=861.3ms (bb 850.5 / tower 10.8) ttff=874.2ms step=72.2ms (bb 59.6 / tower 12.2 / sampler 0.5) codec=13.5ms audio=2.79s total=5.21s rtf=1.870
+[2] common_voice_en_103675-common_voice_en_103676: rows=230 frames=131 stop=eos prefill=924.6ms (bb 913.7 / tower 10.8) ttff=937.4ms step=72.1ms (bb 59.5 / tower 12.2 / sampler 0.5) codec=25.5ms audio=6.08s total=10.40s rtf=1.710
+[3] common_voice_en_103675-common_voice_en_103677: rows=218 frames=58 stop=eos prefill=913.8ms (bb 902.8 / tower 10.9) ttff=926.6ms step=72.3ms (bb 59.6 / tower 12.2 / sampler 0.5) codec=12.7ms audio=2.69s total=5.12s rtf=1.902
+[4] common_voice_en_10933823-common_voice_en_10933822: rows=242 frames=86 stop=eos prefill=922.2ms (bb 911.3 / tower 10.9) ttff=935.1ms step=72.6ms (bb 59.9 / tower 12.3 / sampler 0.5) codec=16.2ms audio=3.99s total=7.18s rtf=1.799
+[5] common_voice_en_10933823-common_voice_en_10933825: rows=235 frames=60 stop=eos prefill=915.4ms (bb 904.6 / tower 10.8) ttff=928.2ms step=72.1ms (bb 59.5 / tower 12.2 / sampler 0.5) codec=11.4ms audio=2.79s total=5.26s rtf=1.886
+[6] common_voice_en_120405-common_voice_en_120402: rows=212 frames=189 stop=eos prefill=880.7ms (bb 869.9 / tower 10.8) ttff=893.5ms step=72.2ms (bb 59.5 / tower 12.2 / sampler 0.5) codec=35.3ms audio=8.78s total=14.56s rtf=1.658
+[7] common_voice_en_120405-common_voice_en_120406: rows=196 frames=119 stop=eos prefill=871.2ms (bb 860.2 / tower 11.0) ttff=884.0ms step=72.2ms (bb 59.6 / tower 12.2 / sampler 0.5) codec=22.3ms audio=5.53s total=9.49s rtf=1.717
+[8] common_voice_en_1205005-common_voice_en_1205007: rows=145 frames=70 stop=eos prefill=845.7ms (bb 835.0 / tower 10.7) ttff=858.6ms step=72.3ms (bb 59.6 / tower 12.2 / sampler 0.5) codec=13.9ms audio=3.25s total=5.92s rtf=1.822
+[9] common_voice_en_1205005-common_voice_en_1205008: rows=142 frames=73 stop=eos prefill=842.5ms (bb 831.7 / tower 10.8) ttff=855.3ms step=72.4ms (bb 59.6 / tower 12.2 / sampler 0.5) codec=14.3ms audio=3.39s total=6.14s rtf=1.811
+[10] common_voice_en_123125-common_voice_en_123126: rows=176 frames=115 stop=eos prefill=861.7ms (bb 850.8 / tower 10.9) ttff=874.4ms step=72.4ms (bb 59.7 / tower 12.2 / sampler 0.5) codec=21.5ms audio=5.34s total=9.20s rtf=1.724
+[11] common_voice_en_123125-common_voice_en_123127: rows=178 frames=131 stop=eos prefill=863.0ms (bb 852.2 / tower 10.7) ttff=875.8ms step=72.2ms (bb 59.5 / tower 12.2 / sampler 0.5) codec=24.1ms audio=6.08s total=10.35s rtf=1.701
+[12] common_voice_en_125386-common_voice_en_125388: rows=158 frames=91 stop=eos prefill=862.5ms (bb 851.7 / tower 10.8) ttff=875.3ms step=72.3ms (bb 59.6 / tower 12.2 / sampler 0.5) codec=17.0ms audio=4.23s total=7.46s rtf=1.765
+[13] common_voice_en_125386-common_voice_en_125389: rows=153 frames=79 stop=eos prefill=856.3ms (bb 845.6 / tower 10.7) ttff=869.2ms step=72.3ms (bb 59.6 / tower 12.2 / sampler 0.5) codec=15.2ms audio=3.67s total=6.58s rtf=1.794
+[14] common_voice_en_137148-common_voice_en_137152: rows=177 frames=82 stop=eos prefill=873.4ms (bb 862.8 / tower 10.6) ttff=886.4ms step=72.4ms (bb 59.7 / tower 12.2 / sampler 0.5) codec=15.5ms audio=3.81s total=6.83s rtf=1.792
+[15] common_voice_en_13900-common_voice_en_13901: rows=168 frames=104 stop=eos prefill=866.7ms (bb 855.8 / tower 10.8) ttff=879.4ms step=72.3ms (bb 59.6 / tower 12.2 / sampler 0.5) codec=19.2ms audio=4.83s total=8.40s rtf=1.740
+[16] common_voice_en_1416089-common_voice_en_1416090: rows=166 frames=67 stop=eos prefill=861.3ms (bb 850.5 / tower 10.8) ttff=874.2ms step=72.6ms (bb 59.9 / tower 12.3 / sampler 0.5) codec=13.7ms audio=3.11s total=5.74s rtf=1.845
+[17] common_voice_en_1416089-common_voice_en_1416093: rows=169 frames=77 stop=eos prefill=861.6ms (bb 850.9 / tower 10.7) ttff=874.5ms step=72.6ms (bb 59.9 / tower 12.3 / sampler 0.5) codec=14.8ms audio=3.58s total=6.47s rtf=1.810
+[18] common_voice_en_15265-common_voice_en_15266: rows=207 frames=87 stop=eos prefill=892.6ms (bb 881.8 / tower 10.8) ttff=905.4ms step=72.5ms (bb 59.8 / tower 12.2 / sampler 0.5) codec=16.4ms audio=4.04s total=7.21s rtf=1.786
+[19] common_voice_en_15265-common_voice_en_15268: rows=209 frames=102 stop=eos prefill=902.1ms (bb 891.3 / tower 10.8) ttff=915.1ms step=72.4ms (bb 59.6 / tower 12.2 / sampler 0.5) codec=18.9ms audio=4.74s total=8.30s rtf=1.753
+20/20 ok; mean step 72.4 ms, mean ttff 914.4 ms, mean rtf 1.808, 0 hit max_new_tokens

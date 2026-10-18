@@ -1,0 +1,47 @@
+Loading weights:   0%|          | 0/1259 [00:00<?, ?it/s]Loading weights: 100%|██████████| 1259/1259 [00:00<00:00, 16240.99it/s]
+[transformers] Passing `generation_config` together with generation-related arguments=({'suppress_tokens', 'begin_suppress_tokens'}) is deprecated and will be removed in future versions. Please pass either a `generation_config` object OR all generation parameters explicitly, but not both.
+[transformers] Ignoring clean_up_tokenization_spaces=True for BPE tokenizer WhisperTokenizer. The clean_up_tokenization post-processing step is designed for WordPiece tokenizers and is destructive for BPE (it strips spaces before punctuation). Set clean_up_tokenization_spaces=False to suppress this warning, or set clean_up_tokenization_spaces_for_bpe_even_though_it_will_corrupt_output=True to force cleanup anyway.
+[transformers] You seem to be using the pipelines sequentially on GPU. In order to maximize efficiency please use a dataset
+[nano-vllm] common_voice_en_10119832-common_voice_en_10119840 wer=0.000 | get the trust fund to the bank early
+[nano-vllm] common_voice_en_10119832-common_voice_en_10119847 wer=0.000 | the stained glass offered a hypnotic atmosphere
+[nano-vllm] common_voice_en_103675-common_voice_en_103676 wer=0.062 | one by one the campfires were extinguished and the oasis fell as quiet as a desert
+[nano-vllm] common_voice_en_103675-common_voice_en_103677 wer=0.125 | and the boy knew the desert sensed his fear
+[nano-vllm] common_voice_en_10933823-common_voice_en_10933822 wer=0.000 | when it comes to the crunch our company will become insolvent
+[nano-vllm] common_voice_en_10933823-common_voice_en_10933825 wer=0.000 | the primary coil has 50 turns
+[nano-vllm] common_voice_en_120405-common_voice_en_120402 wer=0.000 | i am never more aware of a room is acoustics than when i am trying to enjoy a snack i have no intention of sharing
+[nano-vllm] common_voice_en_120405-common_voice_en_120406 wer=0.000 | the only shadow was that of the few scattered pine trees
+[nano-vllm] common_voice_en_1205005-common_voice_en_1205007 wer=0.100 | the work of the tailor seen on each side
+[nano-vllm] common_voice_en_1205005-common_voice_en_1205008 wer=0.000 | nasa plans to launch the rocket tomorrow
+[nano-vllm] common_voice_en_123125-common_voice_en_123126 wer=0.143 | after all who does not want to overcome new challenges and achieve great heights
+[nano-vllm] common_voice_en_123125-common_voice_en_123127 wer=0.000 | later we simply let life proceed in its own direction toward its own fate
+[nano-vllm] common_voice_en_125386-common_voice_en_125388 wer=0.000 | the 2 men hurried back and found the cylinder still lying in the same position
+[nano-vllm] common_voice_en_125386-common_voice_en_125389 wer=0.000 | i thought about the difficulties in translation that might arise
+[nano-vllm] common_voice_en_137148-common_voice_en_137152 wer=0.000 | elvis presley is often called the king of rock and roll
+[nano-vllm] common_voice_en_13900-common_voice_en_13901 wer=0.000 | we do not have the budget to produce it in studio quality
+[nano-vllm] common_voice_en_1416089-common_voice_en_1416090 wer=0.000 | also will numbers be written as digits or as words
+[nano-vllm] common_voice_en_1416089-common_voice_en_1416093 wer=0.077 | i did not like sushi so i did not really enjoy the meal
+[nano-vllm] common_voice_en_15265-common_voice_en_15266 wer=0.000 | large brown dog walks up a blue staircase
+[nano-vllm] common_voice_en_15265-common_voice_en_15268 wer=0.000 | a sky jumper falls toward the sea and the earth
+[vllm-omni] common_voice_en_10119832-common_voice_en_10119840 wer=0.000 | get the trust fund to the bank early
+[vllm-omni] common_voice_en_10119832-common_voice_en_10119847 wer=0.000 | the stained glass offered a hypnotic atmosphere
+[vllm-omni] common_voice_en_103675-common_voice_en_103676 wer=0.000 | one by one the campfires were extinguished and the oasis fell as quiet as the desert
+[vllm-omni] common_voice_en_103675-common_voice_en_103677 wer=0.000 | the boy knew the desert sensed his fear
+[vllm-omni] common_voice_en_10933823-common_voice_en_10933822 wer=0.000 | when it comes to the crunch our company will become insolvent
+[vllm-omni] common_voice_en_10933823-common_voice_en_10933825 wer=0.000 | the primary coil has 50 turns
+[vllm-omni] common_voice_en_120405-common_voice_en_120402 wer=0.000 | i am never more aware of a room is acoustics than when i am trying to enjoy a snack i have no intention of sharing
+[vllm-omni] common_voice_en_120405-common_voice_en_120406 wer=0.000 | the only shadow was that of the few scattered pine trees
+[vllm-omni] common_voice_en_1205005-common_voice_en_1205007 wer=0.000 | the work of the tailor is seen on each side
+[vllm-omni] common_voice_en_1205005-common_voice_en_1205008 wer=0.000 | nasa plans to launch the rocket tomorrow
+[vllm-omni] common_voice_en_123125-common_voice_en_123126 wer=0.143 | after all who does not want to overcome new challenges and achieve great heights
+[vllm-omni] common_voice_en_123125-common_voice_en_123127 wer=0.000 | later we simply let life proceed in its own direction toward its own fate
+[vllm-omni] common_voice_en_125386-common_voice_en_125388 wer=0.000 | the 2 men hurried back and found the cylinder still lying in the same position
+[vllm-omni] common_voice_en_125386-common_voice_en_125389 wer=0.000 | i thought about the difficulties in translation that might arise
+[vllm-omni] common_voice_en_137148-common_voice_en_137152 wer=0.000 | elvis presley is often called the king of rock and roll
+[vllm-omni] common_voice_en_13900-common_voice_en_13901 wer=0.000 | we do not have the budget to produce it in studio quality
+[vllm-omni] common_voice_en_1416089-common_voice_en_1416090 wer=0.000 | also will numbers be written as digits or as words
+[vllm-omni] common_voice_en_1416089-common_voice_en_1416093 wer=0.000 | i do not like sushi so i did not really enjoy the meal
+[vllm-omni] common_voice_en_15265-common_voice_en_15266 wer=0.000 | large brown dog walks up a blue staircase
+[vllm-omni] common_voice_en_15265-common_voice_en_15268 wer=0.100 | a sky jumper falls towards the sea and the earth
+nano-vllm: n=20 corpus WER 2.65% mean-per-utt WER 2.54% (>50%: 0)
+vllm-omni: n=20 corpus WER 1.33% mean-per-utt WER 1.21% (>50%: 0)
+wrote out/b20/wer.json

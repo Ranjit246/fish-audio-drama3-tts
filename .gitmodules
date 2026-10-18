@@ -1,0 +1,3 @@
+[submodule "nanovllm-port/third_party/nano-vllm-fusion"]
+	path = nanovllm-port/third_party/nano-vllm-fusion
+	url = https://github.com/xiez-njust-xmu/nano-vllm-fusion

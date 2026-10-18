@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Drama 3 prompt construction (``reference-bracket-v1``)."""
+
+from .reference_bracket_v1 import (
+    REFERENCE_INSTRUCTION,
+    SEG_ASSISTANT_OPEN,
+    SEG_INSTRUCTION,
+    SEG_REFERENCE_CODES,
+    SEG_REFERENCE_TEXT,
+    SEG_SYSTEM_CLOSE,
+    SEG_SYSTEM_OPEN,
+    SEG_TARGET_TEXT,
+    SEG_USER_CLOSE,
+    SEG_USER_OPEN,
+    TTS_INSTRUCTION,
+    PromptLayout,
+    Reference,
+    Segment,
+    build_prompt_frames,
+    build_prompt_layout,
+    prompt_length,
+    speaker_tag_match,
+    target_text_columns,
+    target_text_columns_of,
+    with_speaker_tag,
+)
+from .tokenizer import DRAMA3_REPO, TOKENIZER_FILES, load_tokenizer, tokenizer_dir
+from .tokens import DRAMA3_TOKENS, Drama3Tokens
+
+__all__ = [
+    "DRAMA3_REPO",
+    "DRAMA3_TOKENS",
+    "REFERENCE_INSTRUCTION",
+    "SEG_ASSISTANT_OPEN",
+    "SEG_INSTRUCTION",
+    "SEG_REFERENCE_CODES",
+    "SEG_REFERENCE_TEXT",
+    "SEG_SYSTEM_CLOSE",
+    "SEG_SYSTEM_OPEN",
+    "SEG_TARGET_TEXT",
+    "SEG_USER_CLOSE",
+    "SEG_USER_OPEN",
+    "TOKENIZER_FILES",
+    "TTS_INSTRUCTION",
+    "Drama3Tokens",
+    "PromptLayout",
+    "Reference",
+    "Segment",
+    "build_prompt_frames",
+    "build_prompt_layout",
+    "load_tokenizer",
+    "prompt_length",
+    "speaker_tag_match",
+    "target_text_columns",
+    "target_text_columns_of",
+    "tokenizer_dir",
+    "with_speaker_tag",
+]

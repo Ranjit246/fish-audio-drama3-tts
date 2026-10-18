@@ -1,0 +1,26 @@
+# environments / caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# benchmark artifacts that are regenerable or large
+results/**/wavs/
+# 1088 pre-encoded references (6 MB); scripts/encode_refs.py rebuilds it
+results/manifest.jsonl
+logs/*.csv
+*.wav
+nanovllm-port/tests/_out/
+
+# model weights never belong here
+*.safetensors
+*.pth
+
+# machine logs from the GPU box (synced locally by sync.sh, not published)
+logs/
+
+# Phase 0 raw attention captures (local only, tens of MB)
+results/align_capture/
+results/wts_validation/
+nanovllm-port/out/

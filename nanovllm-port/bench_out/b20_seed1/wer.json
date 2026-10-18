@@ -1,0 +1,151 @@
+{
+ "hyp": {
+  "label": "nano-vllm",
+  "n": 20,
+  "wer_corpus_pct": 2.2123893805309733,
+  "wer_mean_pct": 2.0267857142857144,
+  "wer_gt50_count": 0,
+  "items": [
+   {
+    "utt": "common_voice_en_10119832-common_voice_en_10119840",
+    "wer": 0.0,
+    "ref": "get the trust fund to the bank early",
+    "hyp": "get the trust fund to the bank early",
+    "hyp_raw": " Get the trust fund to the bank early."
+   },
+   {
+    "utt": "common_voice_en_10119832-common_voice_en_10119847",
+    "wer": 0.0,
+    "ref": "the stained glass offered a hypnotic atmosphere",
+    "hyp": "the stained glass offered a hypnotic atmosphere",
+    "hyp_raw": " The stained glass offered a hypnotic atmosphere."
+   },
+   {
+    "utt": "common_voice_en_103675-common_voice_en_103676",
+    "wer": 0.0625,
+    "ref": "one by one the campfires were extinguished and the oasis fell as quiet as the desert",
+    "hyp": "one by one the campfires were extinguished and the oasis felt as quiet as the desert",
+    "hyp_raw": " One by one, the campfires were extinguished and the oasis felt as quiet as the desert."
+   },
+   {
+    "utt": "common_voice_en_103675-common_voice_en_103677",
+    "wer": 0.0,
+    "ref": "the boy knew the desert sensed his fear",
+    "hyp": "the boy knew the desert sensed his fear",
+    "hyp_raw": " The boy knew the desert sensed his fear."
+   },
+   {
+    "utt": "common_voice_en_10933823-common_voice_en_10933822",
+    "wer": 0.0,
+    "ref": "when it comes to the crunch our company will become insolvent",
+    "hyp": "when it comes to the crunch our company will become insolvent",
+    "hyp_raw": " When it comes to the crunch, our company will become insolvent."
+   },
+   {
+    "utt": "common_voice_en_10933823-common_voice_en_10933825",
+    "wer": 0.0,
+    "ref": "the primary coil has 50 turns",
+    "hyp": "the primary coil has 50 turns",
+    "hyp_raw": " The primary coil has 50 turns."
+   },
+   {
+    "utt": "common_voice_en_120405-common_voice_en_120402",
+    "wer": 0.0,
+    "ref": "i am never more aware of a room is acoustics than when i am trying to enjoy a snack i have no intention of sharing",
+    "hyp": "i am never more aware of a room is acoustics than when i am trying to enjoy a snack i have no intention of sharing",
+    "hyp_raw": " I'm never more aware of a room's acoustics than when I'm trying to enjoy a snack I have no intention of sharing."
+   },
+   {
+    "utt": "common_voice_en_120405-common_voice_en_120406",
+    "wer": 0.0,
+    "ref": "the only shadow was that of the few scattered pine trees",
+    "hyp": "the only shadow was that of the few scattered pine trees",
+    "hyp_raw": " The only shadow was that of the few scattered pine trees."
+   },
+   {
+    "utt": "common_voice_en_1205005-common_voice_en_1205007",
+    "wer": 0.0,
+    "ref": "the work of the tailor is seen on each side",
+    "hyp": "the work of the tailor is seen on each side",
+    "hyp_raw": " The work of the tailor is seen on each side."
+   },
+   {
+    "utt": "common_voice_en_1205005-common_voice_en_1205008",
+    "wer": 0.0,
+    "ref": "nasa plans to launch the rocket tomorrow",
+    "hyp": "nasa plans to launch the rocket tomorrow",
+    "hyp_raw": " NASA plans to launch the rocket tomorrow."
+   },
+   {
+    "utt": "common_voice_en_123125-common_voice_en_123126",
+    "wer": 0.14285714285714285,
+    "ref": "after all who doesn t want to overcome new challenges and achieve great heights",
+    "hyp": "after all who does not want to overcome new challenges and achieve great heights",
+    "hyp_raw": " After all, who doesn't want to overcome new challenges and achieve great heights?"
+   },
+   {
+    "utt": "common_voice_en_123125-common_voice_en_123127",
+    "wer": 0.0,
+    "ref": "later we simply let life proceed in its own direction toward its own fate",
+    "hyp": "later we simply let life proceed in its own direction toward its own fate",
+    "hyp_raw": " Later, we simply let life proceed in its own direction, toward its own fate."
+   },
+   {
+    "utt": "common_voice_en_125386-common_voice_en_125388",
+    "wer": 0.0,
+    "ref": "the 2 men hurried back and found the cylinder still lying in the same position",
+    "hyp": "the 2 men hurried back and found the cylinder still lying in the same position",
+    "hyp_raw": " The two men hurried back and found the cylinder still lying in the same position."
+   },
+   {
+    "utt": "common_voice_en_125386-common_voice_en_125389",
+    "wer": 0.0,
+    "ref": "i thought about the difficulties in translation that might arise",
+    "hyp": "i thought about the difficulties in translation that might arise",
+    "hyp_raw": " I thought about the difficulties in translation that might arise."
+   },
+   {
+    "utt": "common_voice_en_137148-common_voice_en_137152",
+    "wer": 0.0,
+    "ref": "elvis presley is often called the king of rock and roll",
+    "hyp": "elvis presley is often called the king of rock and roll",
+    "hyp_raw": " Elvis Presley is often called the king of rock and roll."
+   },
+   {
+    "utt": "common_voice_en_13900-common_voice_en_13901",
+    "wer": 0.0,
+    "ref": "we do not have the budget to produce it in studio quality",
+    "hyp": "we do not have the budget to produce it in studio quality",
+    "hyp_raw": " We don't have the budget to produce it in studio quality."
+   },
+   {
+    "utt": "common_voice_en_1416089-common_voice_en_1416090",
+    "wer": 0.0,
+    "ref": "also will numbers be written as digits or as words",
+    "hyp": "also will numbers be written as digits or as words",
+    "hyp_raw": " Also, will numbers be written as digits or as words?"
+   },
+   {
+    "utt": "common_voice_en_1416089-common_voice_en_1416093",
+    "wer": 0.0,
+    "ref": "i do not like sushi so i did not really enjoy the meal",
+    "hyp": "i do not like sushi so i did not really enjoy the meal",
+    "hyp_raw": " I do not like sushi, so I did not really enjoy the meal."
+   },
+   {
+    "utt": "common_voice_en_15265-common_voice_en_15266",
+    "wer": 0.0,
+    "ref": "large brown dog walks up a blue staircase",
+    "hyp": "large brown dog walks up a blue staircase",
+    "hyp_raw": " Large brown dog walks up a blue staircase."
+   },
+   {
+    "utt": "common_voice_en_15265-common_voice_en_15268",
+    "wer": 0.2,
+    "ref": "a sky jumper falls toward the sea and the earth",
+    "hyp": "a skyjumper falls toward the sea and the earth",
+    "hyp_raw": " A skyjumper falls toward the sea and the earth."
+   }
+  ]
+ }
+}

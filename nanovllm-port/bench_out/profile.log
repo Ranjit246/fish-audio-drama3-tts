@@ -1,0 +1,39 @@
+[transformers] You are using a model of type `fish_omni` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+USDT:2026-10-18 10:05:25 69278:69278 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-18 10:05:26 69278:69278 SyncActivityProfilerHandler.cpp:46] profiler_stop
+=== decode steps x5 (tower.step + backbone decode_step), top CUDA ops ===
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                           aten::linear         1.02%       5.045ms        13.88%      68.938ms      12.802us       0.000us         0.00%      37.191ms       6.906us          5385  
+                                           aten::matmul         0.84%       4.176ms        11.09%      55.099ms      10.232us       0.000us         0.00%      37.191ms       6.906us          5385  
+                                               aten::mm         6.74%      33.505ms        10.13%      50.304ms       9.341us      37.191ms        29.85%      37.191ms       6.906us          5385  
+                                            aten::copy_         3.89%      19.331ms        10.56%      52.467ms       5.299us      15.500ms        12.44%      15.500ms       1.565us          9902  
+                                          aten::nonzero         5.03%      25.010ms        16.62%      82.573ms      45.747us      11.089ms         8.90%      12.853ms       7.121us          1805  
+                                            aten::where         0.42%       2.074ms        17.07%      84.786ms      44.159us     314.945us         0.25%      12.653ms       6.590us          1920  
+                                    aten::nonzero_numpy         0.32%       1.597ms        15.93%      79.129ms      49.456us       0.000us         0.00%      11.977ms       7.485us          1600  
+                                              aten::mul         5.31%      26.385ms        10.03%      49.835ms       5.943us      11.933ms         9.58%      11.933ms       1.423us          8385  
+                                               aten::to         0.93%       4.618ms        12.56%      62.412ms       5.849us       0.000us         0.00%      11.925ms       1.118us         10670  
+                                         aten::_to_copy         1.66%       8.229ms        11.63%      57.794ms       8.094us       0.000us         0.00%      11.925ms       1.670us          7140  
+std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us      10.434ms         8.38%      10.434ms       4.348us          2400  
+                                            aten::index         3.90%      19.356ms         7.20%      35.787ms       9.941us      10.004ms         8.03%      10.404ms       2.890us          3600  
+                                       aten::index_add_         1.03%       5.122ms         3.65%      18.121ms      11.326us       0.000us         0.00%       9.629ms       6.018us          1600  
+                                     aten::scatter_add_         1.17%       5.830ms         2.17%      10.799ms       6.749us       9.629ms         7.73%       9.629ms       6.018us          1600  
+void at::native::_scatter_gather_elementwise_kernel<...         0.00%       0.000us         0.00%       0.000us       0.000us       9.629ms         7.73%       9.629ms       6.018us          1600  
+void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       9.287ms         7.45%       9.287ms       2.692us          3450  
+void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_...         0.00%       0.000us         0.00%       0.000us       0.000us       9.250ms         7.42%       9.250ms      23.419us           395  
+void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us       8.074ms         6.48%       8.074ms       2.185us          3695  
+std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us       7.781ms         6.25%       7.781ms       4.323us          1800  
+std::enable_if<true, void>::type internal::gemvx::ke...         0.00%       0.000us         0.00%       0.000us       0.000us       7.712ms         6.19%       7.712ms      14.689us           525  
+void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       4.593ms         3.69%       4.593ms       1.440us          3190  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       3.770ms         3.03%       3.770ms       1.795us          2100  
+void at::native::(anonymous namespace)::write_indice...         0.00%       0.000us         0.00%       0.000us       0.000us       3.640ms         2.92%       3.640ms       2.275us          1600  
+                                              aten::add         2.15%      10.678ms         3.86%      19.189ms       6.190us       3.378ms         2.71%       3.378ms       1.090us          3100  
+                                            aten::clone         0.51%       2.541ms         4.42%      21.957ms       8.872us       0.000us         0.00%       3.288ms       1.329us          2475  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 496.786ms
+Self CUDA time total: 124.586ms
+
+single-step ms {'tower_step': 17.229080000106478, 'backbone_step': 76.08213300045463}
+decode step split (ms, with sync overhead): {'linear_attn': 17.32833900132391, 'mlp': 46.12331300631922, 'self_attn': 6.325894995825365}
+prefill T=150 total 1102.3 ms split: {'linear_attn': 120.56714300342719, 'mlp': 964.327293997485, 'self_attn': 6.741745997715043}
