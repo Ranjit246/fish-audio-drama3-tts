@@ -1,0 +1,35 @@
+# Phase 0 head-sweep deploy overlay for Drama 3 on vLLM-Omni.
+#
+# Stage 0 runs EAGER (no CUDA graphs, no torch.compile) so the attention hook's
+# Python code runs on every forward, and serves ONE request at a time so each
+# decode forward has exactly one row that the hook can attribute to the single
+# in-flight request. This is for the offline sweep only: eager was measured at
+# 73-85 % throughput loss on VoxCPM2 and is never a serving configuration.
+#
+# base_config: PLACEHOLDER -- point it at the stock fish_omni.yaml of the venv
+# that serves (python -c 'import vllm_omni, os; print(os.path.dirname(vllm_omni.__file__))')/deploy/fish_omni.yaml
+base_config: /PATH/TO/site-packages/vllm_omni/deploy/fish_omni.yaml
+
+connectors:
+  connector_of_shared_memory:
+    extra:
+      # never hold a prefill back to batch it with another request
+      ar_prefill_admission_min_batch: 0
+      ar_prefill_admission_max_wait_ms: 0
+      ar_prefill_admission_min_running: 0
+
+stages:
+  - stage_id: 0
+    max_num_seqs: 1
+    enforce_eager: true
+    # enforce_eager already disables CUDA graphs in vLLM; spelling the
+    # compilation settings out guards against a torch.compile pass tracing
+    # (and thereby bypassing) the patched forward. mode 0 = NONE.
+    compilation_config:
+      mode: 0
+      cudagraph_mode: NONE
+    # prompts must prefill in ONE chunk (the hook treats a second chunk as a
+    # mixed step and ignores it): stock max_num_batched_tokens is 4096 rows,
+    # far above any Seed-TTS reference (<= ~400 frames) + text.
+  - stage_id: 1
+    max_num_seqs: 1

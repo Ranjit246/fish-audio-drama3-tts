@@ -1,0 +1,821 @@
+diff --git a/docs/design/feature/async_chunk.md b/docs/design/feature/async_chunk.md
+index e3ffdf2ea..9ebe81187 100644
+--- a/docs/design/feature/async_chunk.md
++++ b/docs/design/feature/async_chunk.md
+@@ -296,6 +296,26 @@ connectors:
+ 
+ - `ar_prefill_admission_min_batch` / `ar_prefill_admission_max_wait_ms` / `ar_prefill_admission_min_running`: arrivals share one prefill / mixed step instead of each turning a decode step into one. Off unless `ar_prefill_admission_min_batch` > 1, which requires a positive `ar_prefill_admission_max_wait_ms`; below `ar_prefill_admission_min_running` running requests, arrivals are admitted at once. The wait counts against time to first audio, so keep it well under the first chunk's latency (Fish Audio Drama 3 at 128 streams: RTF 0.578 -> 0.513 with the values above).
+ 
++### Codec Window Ramp
++
++Frame-streaming codec stages (Fish Audio Drama 3: `fish_omni` -> `dac_decoder`) send the first windows of a stream small so the first audio leaves early, then grow them:
++
++```yaml
++connectors:
++  connector_of_shared_memory:
++    name: SharedMemoryConnector
++    extra:
++      codec_chunk_ramp: "6,8,12,16,24,32"   # first windows, in frames
++      codec_chunk_frames: 64                # every window after the ramp
++      codec_left_context_frames: 32         # earlier frames each window carries
++      # Or one ramp per load band: <max_running>:<ramp>, separated by ';',
++      # '*' the default (required).
++      codec_chunk_ramp_by_load: "16:2,4,8,16,32;24:4,6,12,24,32;*:6,8,12,16,24,32"
++```
++
++- `codec_chunk_ramp`: the window sizes of a stream's first windows; one ramp for every stream.
++- `codec_chunk_ramp_by_load`: a request picks its ramp once, at its first decode step on the AR stage, from the number of requests in that step, itself included (the smallest threshold at or above that count, else `*`); the ramp then stays with the stream. Counting the step rather than the requests already streaming lets a burst of simultaneous arrivals see itself: with a lagging count every request of a first wave would take the lightest ramp and all of them would underrun together. Window `n + 1` has to be generated before window `n`'s audio has played, and a decode step gets slower with more streams (Drama 3: ~26 ms at 32 streams), so a 2-frame first window is safe up to 16 streams but stalls most of them at 64. The codec stage captures its CUDA graphs for the windows of every ramp in the table. With both keys set the table wins and a warning is logged; `codec_chunk_ramp: null` in a deploy overlay unsets the base's ramp. See `vllm_omni/deploy/fish_omni_low_latency.yaml`.
++
+ ### Code2Wav Batch Configuration
+ 
+ For optimal performance with async_chunk, the code2wav stage should be configured with batching:
+diff --git a/recipes/fishaudio/Drama-3.md b/recipes/fishaudio/Drama-3.md
+index ea012f9bc..7400cfb61 100644
+--- a/recipes/fishaudio/Drama-3.md
++++ b/recipes/fishaudio/Drama-3.md
+@@ -148,6 +148,23 @@ which returns the exact prompt row count.
+   windows splice as in decoding the whole utterance. Elsewhere it uses the
+   module decoder, re-decoding each window's left context.
+ 
++#### Low-latency profile
++
++`vllm_omni/deploy/fish_omni_low_latency.yaml` (`--deploy-config`) is an
++overlay for deployments of up to a couple of dozen streams that care about
++time to first audio more than about 128-stream throughput. It sizes a
++stream's first codec windows by the number of requests in its first decode
++step (`codec_chunk_ramp_by_load`): 2 frames (93 ms of audio) up to 16
++streams, 4 up to 24, the stock 6 above; a window has to be generated before
++the audio already sent has played, and a decode step slows with the number
++of streams (a 4-frame first window already stalls 2-4% of streams at 32 and
++most of them at 64). It also caps both stages at 64 sequences and raises the
++main-token `top_k` cap to 128. On 1x RTX PRO 6000 (Seed-TTS-Eval en, 300
++lines per level, pre-encoded references, `top_k` 100) TTFA p50 was 48 ms at
++concurrency 1, 88 ms at 16, 149 ms at 24 and 222 ms at 32 (stock 80 ms and
++162 ms at 1 and 16) with no audible stalls; at 64 it matches the stock ramp
++(350 ms vs 352 ms, 2.3% vs 1.3% of streams stalling).
++
+ #### Measured performance (1x H200, both stages on one GPU)
+ 
+ Default `vllm_omni/deploy/fish_omni.yaml` (vLLM 0.31.0). Seed-TTS-Eval en
+diff --git a/tests/model_executor/models/fish_speech/test_chunk_ramp.py b/tests/model_executor/models/fish_speech/test_chunk_ramp.py
+new file mode 100644
+index 000000000..53c9b7753
+--- /dev/null
++++ b/tests/model_executor/models/fish_speech/test_chunk_ramp.py
+@@ -0,0 +1,147 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
++"""Codec window ramps: parsing, selection by load and the DAC graph shapes they need."""
++
++import bisect
++
++import pytest
++
++from vllm_omni.model_executor.models.fish_speech.chunk_ramp import (
++    RampConfig,
++    all_window_sizes,
++    parse_ramp,
++    parse_ramp_by_load,
++    ramp_config_from_extra,
++    select_ramp,
++)
++from vllm_omni.model_executor.models.fish_speech.dac_channels_last import (
++    streaming_decode_shapes,
++    streaming_decode_shapes_for_ramps,
++)
++
++pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
++
++TABLE = "8:2,4,8,16,32;16:3,6,12,24,32;32:4,6,12,24,32;*:6,8,12,16,24,32"
++
++
++def test_parse_ramp_accepts_strings_and_sequences():
++    assert parse_ramp("2, 4,8") == (2, 4, 8)
++    assert parse_ramp([2, 4, 8]) == (2, 4, 8)
++    assert parse_ramp((6.0, 8.0)) == (6, 8)
++
++
++@pytest.mark.parametrize("value", ["", ",", [], "2,0,8", [2, -1], "2,x", 4])
++def test_parse_ramp_rejects_empty_zero_and_malformed(value):
++    with pytest.raises(ValueError, match="codec_chunk_ramp"):
++        parse_ramp(value)
++
++
++def test_parse_ramp_by_load_sorts_thresholds_and_puts_the_default_last():
++    assert parse_ramp_by_load("*:6,8; 16 : 3,6 ;8:2,4;") == [(8, (2, 4)), (16, (3, 6)), (None, (6, 8))]
++
++
++@pytest.mark.parametrize(
++    "value",
++    [
++        "8:2,4;16:3,6",  # no default
++        "*:6,8;*:4,8",  # two defaults
++        "8:2,0;*:6,8",  # a zero window
++        "8:;*:6,8",  # an empty ramp
++        "0:2,4;*:6,8",  # a non-positive threshold
++        "x:2,4;*:6,8",  # a non-integer threshold
++        "8:2,4;8:3,6;*:6,8",  # a threshold twice
++        "2,4,8",  # a static ramp
++        ["8:2,4", "*:6,8"],
++    ],
++)
++def test_parse_ramp_by_load_rejects_bad_tables(value):
++    with pytest.raises(ValueError, match="codec_chunk_ramp_by_load"):
++        parse_ramp_by_load(value)
++
++
++def test_select_ramp_takes_the_smallest_threshold_at_or_above_the_load():
++    table = parse_ramp_by_load(TABLE)
++    assert select_ramp(table, 0) == (2, 4, 8, 16, 32)
++    assert select_ramp(table, 8) == (2, 4, 8, 16, 32)
++    assert select_ramp(table, 9) == (3, 6, 12, 24, 32)
++    assert select_ramp(table, 20) == (4, 6, 12, 24, 32)
++    assert select_ramp(table, 32) == (4, 6, 12, 24, 32)
++    assert select_ramp(table, 100) == (6, 8, 12, 16, 24, 32)
++
++
++def test_all_window_sizes_is_the_union_with_the_chunk():
++    assert all_window_sizes(parse_ramp_by_load(TABLE), 64) == {2, 3, 4, 6, 8, 12, 16, 24, 32, 64}
++
++
++def test_ramp_config_prefers_the_by_load_table_and_warns_once(monkeypatch):
++    from types import SimpleNamespace
++
++    from vllm_omni.model_executor.models.fish_speech import chunk_ramp
++
++    warnings = []
++    monkeypatch.setattr(chunk_ramp, "logger", SimpleNamespace(warning_once=lambda *args: warnings.append(args)))
++    static = ramp_config_from_extra({"codec_chunk_ramp": "2,3"}, default=(6, 8))
++    assert static == RampConfig(static=(2, 3)) and static.ramps == [(2, 3)] and static.select(100) == (2, 3)
++    assert ramp_config_from_extra({}, default=(6, 8)).static == (6, 8)
++    # ``codec_chunk_ramp: null`` (a deploy overlay unsetting the base's ramp) counts as absent.
++    assert ramp_config_from_extra({"codec_chunk_ramp": None, "codec_chunk_ramp_by_load": TABLE}).by_load is not None
++    assert warnings == []
++    both = ramp_config_from_extra({"codec_chunk_ramp": "2,3", "codec_chunk_ramp_by_load": TABLE})
++    assert both.select(0) == (2, 4, 8, 16, 32) and both.select(100) == (6, 8, 12, 16, 24, 32)
++    assert both.window_sizes(64) == {2, 3, 4, 6, 8, 12, 16, 24, 32, 64}
++    assert len(warnings) == 1 and "codec_chunk_ramp_by_load" in warnings[0]
++
++
++def test_streaming_decode_shapes_matches_the_single_ramp_form():
++    # The trims the CUDA test asserts against the real decoder (receptive 10).
++    expected = {8: {0}, 10: {0}, 16: {0}, 20: {0}, 24: {10}, 32: {10}, 48: {22}, 64: {22}, 80: {22}, 96: {22}}
++    buckets, trims = streaming_decode_shapes((10, 10, 12, 32), 64, 32, 10)
++    assert trims == expected
++    assert (buckets, trims) == streaming_decode_shapes_for_ramps([(10, 10, 12, 32)], 64, 32, 10)
++
++
++def _window_pairs(ramp, chunk, left):
++    """Every (frames, context) a stream on ``ramp`` can send, as the chunker sizes them."""
++    pairs, emitted = set(), 0
++    for window in (*ramp, chunk):
++        context = min(emitted, left)
++        pairs.update((new + context, context) for new in range(1, window + 1))
++        emitted += window
++    return pairs
++
++
++@pytest.mark.parametrize("left,receptive", [(32, 10), (0, 0)])
++def test_shapes_for_several_ramps_cover_every_ramp_s_windows(left, receptive):
++    """A stream follows one of the table's ramps; the union buckets must give each of its
++    windows the bucket ``frame_bucket`` picks at run time, with that window's trim captured."""
++    ramps = [ramp for _, ramp in parse_ramp_by_load(TABLE)]
++    chunk = 64
++    buckets, trims = streaming_decode_shapes_for_ramps(ramps, chunk, left, receptive)
++    assert buckets == sorted(set(buckets))
++    for ramp in ramps:
++        own_buckets, _ = streaming_decode_shapes(ramp, chunk, left, receptive)
++        assert set(own_buckets) <= set(buckets)
++        for frames, context in _window_pairs(ramp, chunk, left):
++            bucket = buckets[bisect.bisect_left(buckets, frames)]
++            assert context - min(context, receptive) in trims[bucket], (ramp, frames, context)
++    if left == 0:
++        # Stateful decoding: graphs take new frames only, so buckets are the window sizes.
++        assert set(buckets) >= all_window_sizes(parse_ramp_by_load(TABLE), chunk)
++        assert all(trims[bucket] == {0} for bucket in buckets)
++
++
++def test_decoder_graph_planning_covers_the_union_of_ramps():
++    from vllm_omni.model_executor.models.fish_speech.fish_speech_dac_decoder import streaming_window_ramps
++
++    extra = {"codec_chunk_ramp_by_load": TABLE, "codec_chunk_frames": 64, "codec_left_context_frames": 32}
++    ramps, chunk, left = streaming_window_ramps(extra)
++    assert ramps == [(2, 4, 8, 16, 32), (3, 6, 12, 24, 32), (4, 6, 12, 24, 32), (6, 8, 12, 16, 24, 32)]
++    assert (chunk, left) == (64, 32)
++    # The stateful path (left context and receptive field 0) captures one graph per window size.
++    assert max(chunk, *(size for ramp in ramps for size in ramp)) == 64
++    buckets, _ = streaming_decode_shapes_for_ramps(ramps, chunk, 0, 0)
++    assert set(buckets) >= {2, 3, 4, 6, 8, 12, 16, 24, 32, 64}
++    # The static key alone, and the legacy first-window key, keep their plans.
++    assert streaming_window_ramps({"codec_chunk_ramp": "6,8,12", "codec_chunk_frames": 16}) == ([(6, 8, 12)], 16, 25)
++    assert streaming_window_ramps({"initial_codec_chunk_frames": 4}) == ([(4,)], 25, 25)
++    assert streaming_window_ramps({}) == ([()], 25, 25)
+diff --git a/tests/model_executor/stage_input_processors/test_fish_omni_async_chunk.py b/tests/model_executor/stage_input_processors/test_fish_omni_async_chunk.py
+index 79963fa3c..3334002e4 100644
+--- a/tests/model_executor/stage_input_processors/test_fish_omni_async_chunk.py
++++ b/tests/model_executor/stage_input_processors/test_fish_omni_async_chunk.py
+@@ -20,12 +20,18 @@ EOS = 248046
+ CODEBOOKS = 10
+ 
+ 
+-def _manager(ramp="2,3", chunk=4, left=2):
++BY_LOAD = "16:2,4,8,16,32;24:4,6,12,24,32;*:6,8,12,16,24,32"
++RAMP_16, RAMP_24, RAMP_DEFAULT = (2, 4, 8, 16, 32), (4, 6, 12, 24, 32), (6, 8, 12, 16, 24, 32)
++
++
++def _manager(ramp="2,3", chunk=4, left=2, by_load=None, in_flight=0):
++    extra = {"codec_chunk_ramp": ramp, "codec_chunk_frames": chunk, "codec_left_context_frames": left}
++    if by_load is not None:
++        extra["codec_chunk_ramp_by_load"] = by_load
+     return SimpleNamespace(
+-        connector=SimpleNamespace(
+-            config={"extra": {"codec_chunk_ramp": ramp, "codec_chunk_frames": chunk, "codec_left_context_frames": left}}
+-        ),
+-        request_payload={},
++        connector=SimpleNamespace(config={"extra": extra}),
++        # Requests already streaming on this stage hold their sender state here.
++        request_payload={f"running-{index}": {} for index in range(in_flight)},
+     )
+ 
+ 
+@@ -123,3 +129,125 @@ def test_windows_carry_their_index_in_the_stream(left):
+     seqs.append((final.meta.chunk_seq, int(final.meta.left_context_size)))
+     assert [seq for seq, _ in seqs] == list(range(len(seqs)))
+     assert all(context == (0 if left == 0 or seq == 0 else left) for seq, context in seqs)
++
++
++def _first_windows(manager, request, steps=8):
++    """Frames of the first windows a stream sends through the single-request path, one frame per step."""
++    sizes = []
++    for index in range(steps):
++        payload = fish_omni_to_dac_decoder_async_chunk(manager, _frame(index), request)
++        if payload is not None:
++            sizes.append(payload.codes.audio.shape[1] - int(payload.meta.left_context_size))
++    return sizes
++
++
++def _step(manager, requests, index, finished=()):
++    """One batched step: every request gets frame ``index``; ``finished`` requests end with it."""
++    return fish_omni_to_dac_decoder_async_chunk_batch(
++        manager, [_frame(index) for _ in requests], requests, [r in finished for r in requests]
++    )
++
++
++def _ramp_of(manager, request):
++    return manager.request_payload[request.external_req_id]["_fish_omni_stream"]["ramp"]
++
++
++def _by_load_manager():
++    return _manager(ramp=None, chunk=64, left=0, by_load=BY_LOAD)
++
++
++@pytest.mark.parametrize(
++    "running,ramp", [(1, RAMP_16), (16, RAMP_16), (17, RAMP_24), (24, RAMP_24), (25, RAMP_DEFAULT)]
++)
++def test_streams_starting_in_one_step_take_the_ramp_of_that_step_s_size(running, ramp):
++    manager = _by_load_manager()
++    requests = [_request(f"r{index}") for index in range(running)]
++    _step(manager, requests, 0)
++    assert all(_ramp_of(manager, request) == ramp for request in requests)
++    # Chosen once: the streams keep their ramp while the load around them changes.
++    manager.request_payload.update({f"late-{index}": {} for index in range(100)})
++    windows = [[] for _ in requests]
++    for index in range(1, sum(ramp) + 64):
++        for slot, payload in enumerate(_step(manager, requests, index)):
++            if payload is not None:
++                windows[slot].append(payload.codes.audio.shape[1])
++    assert all(sizes == [*ramp, 64] for sizes in windows)
++
++
++def test_a_burst_starting_in_one_step_sees_itself():
++    """64 requests whose first step is the same step all take the default ramp, although none
++    of them had sender state before it (a count of streams already running would say 0)."""
++    manager = _by_load_manager()
++    requests = [_request(f"burst-{index}") for index in range(64)]
++    assert manager.request_payload == {}
++    payloads = [_step(manager, requests, index) for index in range(6)]
++    assert all(_ramp_of(manager, request) == RAMP_DEFAULT for request in requests)
++    assert all(payload is None for step in payloads[:5] for payload in step)
++    assert [payload.codes.audio.shape[1] for payload in payloads[5]] == [6] * 64
++
++
++def test_a_stream_joining_running_streams_counts_the_step_it_joins():
++    manager = _by_load_manager()
++    running = [_request(f"running-{index}") for index in range(15)]
++    for index in range(3):
++        _step(manager, running, index)
++    joiner = _request("joiner")  # a step of 15 + 1 requests
++    _step(manager, [*running, joiner], 3)
++    assert _ramp_of(manager, joiner) == RAMP_16
++    assert all(_ramp_of(manager, request) == RAMP_16 for request in running)
++    # Nine more arrive together: 25 in the step, the default ramp; the earlier streams keep theirs.
++    wave = [_request(f"wave-{index}") for index in range(9)]
++    _step(manager, [*running, joiner, *wave], 4)
++    assert all(_ramp_of(manager, request) == RAMP_DEFAULT for request in wave)
++    assert _ramp_of(manager, joiner) == RAMP_16
++
++
++def test_finished_streams_leave_the_step_count():
++    manager = _by_load_manager()
++    first = [_request(f"first-{index}") for index in range(24)]
++    _step(manager, first, 0)
++    assert all(_ramp_of(manager, request) == RAMP_24 for request in first)
++    _step(manager, first, 1, finished=first[10:])
++    survivors = first[:10]
++    later = _request("later")  # a step of 10 + 1 requests
++    _step(manager, [*survivors, later], 2)
++    assert _ramp_of(manager, later) == RAMP_16
++    assert all(_ramp_of(manager, request) == RAMP_24 for request in survivors)
++
++
++@pytest.mark.parametrize("in_flight,ramp", [(0, RAMP_16), (15, RAMP_16), (16, RAMP_24), (24, RAMP_DEFAULT)])
++def test_the_single_request_path_falls_back_to_the_streams_with_sender_state(in_flight, ramp):
++    """Without a step size the requests holding sender state stand in, the new one included.
++    (That count lags one step: a burst through this path would see only itself.)"""
++    manager = _manager(ramp=None, chunk=64, left=0, by_load=BY_LOAD, in_flight=in_flight)
++    request = _request("new")
++    assert _first_windows(manager, request, steps=ramp[0]) == [ramp[0]]
++    assert _ramp_of(manager, request) == ramp
++
++
++def test_the_by_load_table_wins_over_the_static_ramp(monkeypatch):
++    from vllm_omni.model_executor.models.fish_speech import chunk_ramp
++
++    warnings = []
++    monkeypatch.setattr(chunk_ramp, "logger", SimpleNamespace(warning_once=lambda *args: warnings.append(args)))
++    manager = _manager(ramp="1", chunk=64, left=0, by_load=BY_LOAD)
++    assert _first_windows(manager, _request("a"), steps=3) == [2]
++    assert _first_windows(manager, _request("b"), steps=3) == [2]
++    assert len(warnings) == 1  # the config is read once per adapter
++
++
++def test_the_static_ramp_is_unchanged_without_the_by_load_key():
++    manager = _manager(in_flight=50)
++    assert _first_windows(manager, _request(), steps=6) == [2, 3]
++    assert _ramp_of(manager, _request()) == (2, 3)
++    batched = _manager()
++    _step(batched, [_request(f"r{index}") for index in range(64)], 0)
++    assert all(state["_fish_omni_stream"]["ramp"] == (2, 3) for state in batched.request_payload.values())
++
++
++@pytest.mark.parametrize("extra", [{"codec_chunk_ramp": "2,0"}, {"codec_chunk_ramp_by_load": "8:2,4"}])
++def test_invalid_ramps_are_rejected_at_the_first_step(extra):
++    manager = _manager()
++    manager.connector.config["extra"].update(extra)
++    with pytest.raises(ValueError, match="codec_chunk_ramp"):
++        fish_omni_to_dac_decoder_async_chunk(manager, _frame(0), _request())
+diff --git a/vllm_omni/deploy/fish_omni_low_latency.yaml b/vllm_omni/deploy/fish_omni_low_latency.yaml
+new file mode 100644
+index 000000000..114e8ca9d
+--- /dev/null
++++ b/vllm_omni/deploy/fish_omni_low_latency.yaml
+@@ -0,0 +1,41 @@
++# Fish Audio Drama 3, low-latency profile: an overlay on fish_omni.yaml for
++# deployments that care about time-to-first-audio at <= 24 concurrent streams
++# (voice agents, telephony) more than about 128-stream throughput.
++#
++# Measured on 1x RTX PRO 6000 Blackwell 96 GB (vLLM 0.31.0, vllm-omni c470395),
++# Seed-TTS-Eval en, references pre-encoded (ref_audio_codes), streaming pcm,
++# top_k 100, a fresh server per concurrency, 300 lines per level:
++#   c=1   TTFA p50 48 ms  (stock 80 ms),  RTF 0.177, no audible (> 100 ms) stalls
++#   c=16  TTFA p50 88 ms  (stock 162 ms), RTF 0.408, no audible stalls
++#   c=24  TTFA p50 149 ms,                RTF 0.495, no audible stalls
++#   c=32  TTFA p50 222 ms,                RTF 0.558, no audible stalls
++#   c=64  TTFA p50 350 ms (stock 352 ms), RTF 0.700, 2.3% of streams stall (stock 1.3%)
++# A 4-frame first window at 32 streams stalled 1.7-4% of streams and 91% at
++# 64; above 24 streams only the stock ramp is safe.
++# Launch: vllm serve fishaudio/drama-3 --omni --deploy-config vllm_omni/deploy/fish_omni_low_latency.yaml
++base_config: fish_omni.yaml
++connectors:
++  connector_of_shared_memory:
++    extra:
++      # A stream's first windows are sized at its first decode step from the
++      # requests in that step (the smallest threshold at or above that count),
++      # so a burst of arrivals sees itself. Each window must be generated
++      # before the audio already sent runs out: frames(n+1) x step_ms <
++      # 46.4 ms x frames sent so far, and a decode step takes ~26 ms at 32
++      # streams. So a 2-frame first window (93 ms of audio, the codec starts
++      # 4 steps earlier than with 6) up to 16 streams, 4 frames up to 24, and
++      # the stock ramp above that.
++      codec_chunk_ramp_by_load: "16:2,4,8,16,32;24:4,6,12,24,32;*:6,8,12,16,24,32"
++      # The base's one-size ramp; the table above replaces it.
++      codec_chunk_ramp: null
++      # Prefill admission stays at the base's values: it protects saturation
++      # and only applies from 32 running requests.
++stages:
++  - stage_id: 0
++    max_num_seqs: 64
++    # Lets requests ask for main-token top_k up to 128 (the fused sampler caps at
++    # 64 by default); see sgl-project/sglang-omni#2823 on top_k 30 and silence.
++    hf_overrides:
++      fish_omni_max_top_k: 128
++  - stage_id: 1
++    max_num_seqs: 64
+diff --git a/vllm_omni/model_executor/models/fish_speech/chunk_ramp.py b/vllm_omni/model_executor/models/fish_speech/chunk_ramp.py
+new file mode 100644
+index 000000000..e865ca271
+--- /dev/null
++++ b/vllm_omni/model_executor/models/fish_speech/chunk_ramp.py
+@@ -0,0 +1,176 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
++"""Codec window ramps of the Fish Audio frame stream: parsing and selection by load.
++
++``codec_chunk_ramp`` (``"6,8,12,16,24,32"`` or a list) sizes a stream's first
++windows, after which every window has ``codec_chunk_frames`` frames. A small
++first window gets audio out early, but window ``n + 1`` has to be generated
++before window ``n``'s audio has played; how many frames a decode step yields
++per stream falls with the number of streams. ``codec_chunk_ramp_by_load``
++(``"16:2,4,8,16,32;24:4,6,12,24,32;*:6,8,12,16,24,32"``) therefore keeps one
++ramp per load band -- ``<max_running>:<ramp>`` entries separated by ``;``,
++``*`` the default -- and a request takes the ramp of the smallest threshold
++at or above the number of requests in its first decode step, itself included.
++
++Both the frame-stream processor (Stage 0, which chooses the ramp) and the DAC
++decoder (Stage 1, which captures a CUDA graph per window size) read the
++connector config through :func:`ramp_config_from_extra`.
++"""
++
++from __future__ import annotations
++
++from collections.abc import Iterable, Mapping
++from dataclasses import dataclass
++from typing import Any
++
++from vllm.logger import init_logger
++
++logger = init_logger(__name__)
++
++STATIC_RAMP_KEY = "codec_chunk_ramp"
++BY_LOAD_RAMP_KEY = "codec_chunk_ramp_by_load"
++
++# ``(max_running, ramp)`` entries, thresholds ascending, the default (``None``) last.
++RampTable = list[tuple[int | None, tuple[int, ...]]]
++
++
++def parse_ramp(value: str | Iterable[int], *, name: str = STATIC_RAMP_KEY) -> tuple[int, ...]:
++    """``"2,4,8"`` or ``[2, 4, 8]`` -> ``(2, 4, 8)``: one or more windows of at least one frame."""
++    if isinstance(value, str):
++        parts: list[Any] = [part.strip() for part in value.split(",") if part.strip()]
++    else:
++        try:
++            parts = list(value)
++        except TypeError as exc:
++            raise ValueError(f"{name}: expected 'a,b,c' or a list of frame counts, got {value!r}") from exc
++    try:
++        ramp = tuple(int(part) for part in parts)
++    except (TypeError, ValueError) as exc:
++        raise ValueError(f"{name}: windows must be integers, got {value!r}") from exc
++    if not ramp:
++        raise ValueError(f"{name}: at least one window is required, got {value!r}")
++    if any(frames <= 0 for frames in ramp):
++        raise ValueError(f"{name}: every window needs at least one frame, got {value!r}")
++    return ramp
++
++
++def parse_ramp_by_load(value: str) -> RampTable:
++    """``"8:2,4,8;16:3,6,12;*:6,8,12"`` -> ``[(8, (2, 4, 8)), (16, (3, 6, 12)), (None, (6, 8, 12))]``.
++
++    Entries are ``<max_running>:<ramp>`` separated by ``;``. Thresholds are
++    positive and distinct; the ``*`` default is required and sorts last.
++    """
++    if not isinstance(value, str):
++        raise ValueError(f"{BY_LOAD_RAMP_KEY}: expected '<max_running>:<ramp>;...', got {value!r}")
++    entries: list[tuple[int, tuple[int, ...]]] = []
++    default: tuple[int, ...] | None = None
++    for entry in value.split(";"):
++        entry = entry.strip()
++        if not entry:
++            continue
++        threshold, separator, ramp = entry.partition(":")
++        threshold = threshold.strip()
++        if not separator or not threshold:
++            raise ValueError(f"{BY_LOAD_RAMP_KEY}: entry {entry!r} is not '<max_running>:<ramp>'")
++        windows = parse_ramp(ramp, name=f"{BY_LOAD_RAMP_KEY} entry {entry!r}")
++        if threshold == "*":
++            if default is not None:
++                raise ValueError(f"{BY_LOAD_RAMP_KEY}: more than one '*' default in {value!r}")
++            default = windows
++            continue
++        try:
++            limit = int(threshold)
++        except ValueError as exc:
++            raise ValueError(f"{BY_LOAD_RAMP_KEY}: threshold {threshold!r} must be an integer or '*'") from exc
++        if limit <= 0:
++            raise ValueError(f"{BY_LOAD_RAMP_KEY}: threshold {threshold!r} must be positive")
++        if any(limit == seen for seen, _ in entries):
++            raise ValueError(f"{BY_LOAD_RAMP_KEY}: threshold {limit} given twice in {value!r}")
++        entries.append((limit, windows))
++    if default is None:
++        raise ValueError(f"{BY_LOAD_RAMP_KEY}: a '*' default entry is required, got {value!r}")
++    entries.sort(key=lambda entry: entry[0])
++    return [*entries, (None, default)]
++
++
++def select_ramp(table: RampTable, running: int) -> tuple[int, ...]:
++    """The ramp of the smallest threshold at or above ``running`` streams, else the default."""
++    for limit, ramp in table:
++        if limit is None or running <= limit:
++            return ramp
++    raise ValueError("ramp table has no default entry")
++
++
++def all_window_sizes(table: RampTable, chunk: int) -> set[int]:
++    """Every window size the table's ramps can send, ``chunk`` (the steady-state window) included."""
++    sizes = {int(chunk)} if chunk > 0 else set()
++    for _, ramp in table:
++        sizes.update(ramp)
++    return sizes
++
++
++@dataclass
++class RampConfig:
++    """The window ramps a connector ``extra`` block configures.
++
++    ``static`` is ``codec_chunk_ramp`` (or the caller's default) and
++    ``by_load`` the parsed ``codec_chunk_ramp_by_load`` table, which takes
++    precedence when present.
++    """
++
++    static: tuple[int, ...]
++    by_load: RampTable | None = None
++
++    @property
++    def ramps(self) -> list[tuple[int, ...]]:
++        """Every ramp a stream can follow (one per load band, or the static one)."""
++        if self.by_load is not None:
++            return [ramp for _, ramp in self.by_load]
++        return [self.static]
++
++    def select(self, running: int) -> tuple[int, ...]:
++        """The ramp for a stream whose first decode step has ``running`` requests."""
++        if self.by_load is not None:
++            return select_ramp(self.by_load, running)
++        return self.static
++
++    def window_sizes(self, chunk: int) -> set[int]:
++        """Every window size any ramp (then ``chunk``) can send."""
++        if self.by_load is not None:
++            return all_window_sizes(self.by_load, chunk)
++        return all_window_sizes([(None, self.static)], chunk)
++
++
++def ramp_config_from_extra(extra: Mapping[str, Any], *, default: Iterable[int] = ()) -> RampConfig:
++    """Read ``codec_chunk_ramp`` / ``codec_chunk_ramp_by_load`` from a connector ``extra`` block.
++
++    A key whose value is ``None`` (``codec_chunk_ramp: null`` in a deploy
++    overlay) counts as absent. With both keys set the by-load table wins and a
++    warning is logged once.
++    """
++    static_cfg = extra.get(STATIC_RAMP_KEY)
++    by_load_cfg = extra.get(BY_LOAD_RAMP_KEY)
++    static = parse_ramp(static_cfg) if static_cfg is not None else tuple(int(frames) for frames in default)
++    by_load = parse_ramp_by_load(by_load_cfg) if by_load_cfg is not None else None
++    if by_load is not None and static_cfg is not None:
++        logger.warning_once(
++            "Both %s and %s are set; the by-load table decides every stream's ramp and %s=%r is ignored",
++            BY_LOAD_RAMP_KEY,
++            STATIC_RAMP_KEY,
++            STATIC_RAMP_KEY,
++            static_cfg,
++        )
++    return RampConfig(static=static, by_load=by_load)
++
++
++__all__ = [
++    "BY_LOAD_RAMP_KEY",
++    "STATIC_RAMP_KEY",
++    "RampConfig",
++    "RampTable",
++    "all_window_sizes",
++    "parse_ramp",
++    "parse_ramp_by_load",
++    "ramp_config_from_extra",
++    "select_ramp",
++]
+diff --git a/vllm_omni/model_executor/models/fish_speech/dac_channels_last.py b/vllm_omni/model_executor/models/fish_speech/dac_channels_last.py
+index 86e9bfffe..23d828cce 100644
+--- a/vllm_omni/model_executor/models/fish_speech/dac_channels_last.py
++++ b/vllm_omni/model_executor/models/fish_speech/dac_channels_last.py
+@@ -1088,12 +1088,30 @@ def streaming_decode_shapes(
+     Every (frames, context) a window can carry -- a full window or a shorter
+     final one -- maps to its bucket and to ``context - min(context, receptive)``.
+     """
+-    pairs, windows, emitted = set(), set(), 0
+-    for window in (*ramp, chunk):
+-        context = min(emitted, left_context)
+-        windows.add(window + context)
+-        pairs.update((new + context, context) for new in range(1, window + 1))
+-        emitted += window
++    return streaming_decode_shapes_for_ramps([ramp], chunk, left_context, receptive_frames)
++
++
++def streaming_decode_shapes_for_ramps(
++    ramps: Iterable[Sequence[int]], chunk: int, left_context: int, receptive_frames: int
++) -> tuple[list[int], dict[int, set[int]]]:
++    """:func:`streaming_decode_shapes` over every ramp a stream may follow (``codec_chunk_ramp_by_load``).
++
++    A window's context is the frames its stream emitted before it (capped at
++    ``left_context``), so the buckets depend on each ramp's order, not only
++    its sizes: the ramps' windows are walked one ramp at a time and the
++    (frames, context) pairs of all of them are mapped onto the union of the
++    buckets, so a pair lands in the bucket ``DACDecodeGraphs.frame_bucket``
++    picks at run time, with its trim captured there.
++    """
++    pairs: set[tuple[int, int]] = set()
++    windows: set[int] = set()
++    for ramp in ramps:
++        emitted = 0
++        for window in (*ramp, chunk):
++            context = min(emitted, left_context)
++            windows.add(window + context)
++            pairs.update((new + context, context) for new in range(1, window + 1))
++            emitted += window
+     largest = chunk + left_context
+     buckets = sorted(windows | {b for b in (8, 16, 24, 32, 48, 64, 80, 96, 128, 192, 256) if b < largest})
+     trims: dict[int, set[int]] = {}
+@@ -1108,4 +1126,5 @@ __all__ = [
+     "ChannelsLastDACDecoder",
+     "DACDecodeGraphs",
+     "streaming_decode_shapes",
++    "streaming_decode_shapes_for_ramps",
+ ]
+diff --git a/vllm_omni/model_executor/models/fish_speech/fish_speech_dac_decoder.py b/vllm_omni/model_executor/models/fish_speech/fish_speech_dac_decoder.py
+index 31adb814c..a30d8d789 100644
+--- a/vllm_omni/model_executor/models/fish_speech/fish_speech_dac_decoder.py
++++ b/vllm_omni/model_executor/models/fish_speech/fish_speech_dac_decoder.py
+@@ -25,6 +25,7 @@ from vllm.config import VllmConfig
+ from vllm.forward_context import get_forward_context, is_forward_context_available
+ from vllm.logger import init_logger
+ 
++from vllm_omni.model_executor.models.fish_speech.chunk_ramp import ramp_config_from_extra
+ from vllm_omni.model_executor.models.fish_speech.dac_utils import (
+     DAC_HOP_LENGTH,
+     DAC_NUM_CODEBOOKS,
+@@ -61,6 +62,21 @@ def _get_int_config(extra_cfg: dict[str, Any], default: int, *names: str) -> int
+         raise ValueError(f"Invalid Fish Speech DAC integer config {names[0]}={value!r}") from exc
+ 
+ 
++def streaming_window_ramps(extra_cfg: dict[str, Any]) -> tuple[list[tuple[int, ...]], int, int]:
++    """The window ramps the frame stream can follow, its steady-state chunk and left context.
++
++    ``codec_chunk_ramp_by_load`` gives one ramp per load band, ``codec_chunk_ramp``
++    one for all; with neither, ``initial_codec_chunk_frames`` (if set) is the
++    only ramp window. The decoder captures graphs for every ramp's windows.
++    """
++    ramps = ramp_config_from_extra(extra_cfg).ramps
++    if ramps == [()] and int(extra_cfg.get("initial_codec_chunk_frames", 0) or 0) > 0:
++        ramps = [(int(extra_cfg["initial_codec_chunk_frames"]),)]
++    chunk = int(extra_cfg.get("codec_chunk_frames", 25))
++    left = int(extra_cfg.get("codec_left_context_frames", 25))
++    return ramps, chunk, left
++
++
+ def _get_dac_dtype(extra_cfg: dict[str, Any]) -> torch.dtype:
+     value = extra_cfg.get("fish_speech_dac_dtype", "float32")
+     value = str(value).strip().lower()
+@@ -278,19 +294,12 @@ class FishSpeechDACDecoder(nn.Module):
+     def _capture_graphs(self, device: torch.device) -> None:
+         from vllm_omni.model_executor.models.fish_speech.dac_channels_last import (
+             DACDecodeGraphs,
+-            streaming_decode_shapes,
++            streaming_decode_shapes_for_ramps,
+         )
+ 
+-        cfg = self._extra_cfg
+-        ramp_cfg = cfg.get("codec_chunk_ramp", ())
+-        if isinstance(ramp_cfg, str):
+-            ramp = tuple(int(v) for v in ramp_cfg.split(",") if v.strip())
+-        else:
+-            ramp = tuple(int(v) for v in ramp_cfg)
+-        if not ramp and int(cfg.get("initial_codec_chunk_frames", 0) or 0) > 0:
+-            ramp = (int(cfg["initial_codec_chunk_frames"]),)
+-        chunk = int(cfg.get("codec_chunk_frames", 25))
+-        left = int(cfg.get("codec_left_context_frames", 25))
++        # One ramp per load band with codec_chunk_ramp_by_load: a stream
++        # follows one of them, so graphs cover the windows of all.
++        ramps, chunk, left = streaming_window_ramps(self._extra_cfg)
+         max_padded = self._decode_batch_max_padded_frames or 2048
+         max_batch = self._decode_batch_max_batch or self.vllm_config.scheduler_config.max_num_seqs
+         # The convolutions only need receptive_frames of a window's left
+@@ -303,11 +312,12 @@ class FishSpeechDACDecoder(nn.Module):
+             # Live streams can outnumber one step's batch; past the pool a
+             # request decodes with re-decoded context instead.
+             slots = 2 * max_batch
+-            stream = DACStreamState(slots, max_window_frames=max((*ramp, chunk)))
++            window_sizes = {chunk, *(size for ramp in ramps for size in ramp)}
++            stream = DACStreamState(slots, max_window_frames=max(window_sizes))
+             self._free_stream_slots = list(range(slots - 1, -1, -1))
+             # Graphs take new frames only: buckets by window size, no trims.
+             receptive = left = 0
+-        buckets, trims = streaming_decode_shapes(ramp, chunk, left, receptive)
++        buckets, trims = streaming_decode_shapes_for_ramps(ramps, chunk, left, receptive)
+         self._graphs = DACDecodeGraphs(
+             self._channels_last,
+             self._num_codebooks,
+diff --git a/vllm_omni/model_executor/stage_input_processors/fish_omni.py b/vllm_omni/model_executor/stage_input_processors/fish_omni.py
+index fabefeba0..4c5f4fd66 100644
+--- a/vllm_omni/model_executor/stage_input_processors/fish_omni.py
++++ b/vllm_omni/model_executor/stage_input_processors/fish_omni.py
+@@ -7,7 +7,9 @@ main token is not semantic (the end-of-speech frame) carry no audio. Windows
+ follow a ramp (``codec_chunk_ramp``, default ``6, 8, 12, 16, 24, 32``, then
+ ``codec_chunk_frames``) so the first audio leaves early, and every window
+ carries up to ``codec_left_context_frames`` earlier frames, which the DAC
+-decoder trims (or skips, when it keeps the stream's codec state). Windows
++decoder trims (or skips, when it keeps the stream's codec state). With
++``codec_chunk_ramp_by_load`` a stream's ramp is chosen at its first step from
++the number of requests in that step (see ``fish_speech.chunk_ramp``). Windows
+ travel as ``[codebooks, frames]`` tensors.
+ """
+ 
+@@ -20,6 +22,7 @@ import numpy as np
+ import torch
+ 
+ from vllm_omni.data_entry_keys import CodesStruct, MetaStruct, OmniPayloadStruct
++from vllm_omni.model_executor.models.fish_speech.chunk_ramp import RampConfig, ramp_config_from_extra
+ 
+ SEMANTIC_BEGIN_ID = 248099
+ CODEBOOK_SIZE = 4096
+@@ -30,7 +33,7 @@ DEFAULT_LEFT_CONTEXT = 32
+ _STATE_KEY = "_fish_omni_stream"
+ 
+ 
+-def _config(transfer_manager: Any) -> tuple[tuple[int, ...], int, int]:
++def _config(transfer_manager: Any) -> tuple[RampConfig, int, int]:
+     cached = getattr(transfer_manager, "_fish_omni_chunk_config", None)
+     if cached is not None:
+         return cached
+@@ -40,11 +43,10 @@ def _config(transfer_manager: Any) -> tuple[tuple[int, ...], int, int]:
+     cfg = cfg if isinstance(cfg, dict) else {}
+     chunk = int(cfg.get("codec_chunk_frames", DEFAULT_CHUNK))
+     left = int(cfg.get("codec_left_context_frames", DEFAULT_LEFT_CONTEXT))
+-    ramp_cfg = cfg.get("codec_chunk_ramp", DEFAULT_RAMP)
+-    ramp = tuple(int(v) for v in (ramp_cfg.split(",") if isinstance(ramp_cfg, str) else ramp_cfg))
+-    if chunk <= 0 or left < 0 or any(v <= 0 for v in ramp):
+-        raise ValueError(f"invalid fish_omni codec chunk config chunk={chunk} left={left} ramp={ramp}")
+-    transfer_manager._fish_omni_chunk_config = (ramp, chunk, left)
++    if chunk <= 0 or left < 0:
++        raise ValueError(f"invalid fish_omni codec chunk config chunk={chunk} left={left}")
++    ramps = ramp_config_from_extra(cfg, default=DEFAULT_RAMP)
++    transfer_manager._fish_omni_chunk_config = (ramps, chunk, left)
+     return transfer_manager._fish_omni_chunk_config
+ 
+ 
+@@ -57,6 +59,27 @@ def _state(transfer_manager: Any, request_id: str) -> dict[str, Any]:
+     )
+ 
+ 
++def _ramp(transfer_manager: Any, state: dict[str, Any], ramps: RampConfig, running: int | None) -> tuple[int, ...]:
++    """The stream's window ramp, chosen at its first step and kept.
++
++    ``running`` is the number of requests in that step, the new one included:
++    the streams whose decode steps it shares, so a burst of arrivals that
++    starts in one step sees the whole burst. Without it (the single-request
++    path) the requests with sender state on this stage stand in:
++    ``request_payload`` gains a request's entry at its first step here
++    (``_state``) and loses it when the adapter reclaims the request on finish
++    or abort. That count lags one step, so every request of a simultaneous
++    first wave sees only itself and takes the lightest ramp. ``len`` reads
++    the dict atomically while other threads reclaim.
++    """
++    ramp = state.get("ramp")
++    if ramp is None:
++        if running is None:
++            running = len(transfer_manager.request_payload)
++        ramp = state["ramp"] = ramps.select(max(1, running))
++    return ramp
++
++
+ def _frames(output: Any) -> torch.Tensor | None:
+     if not isinstance(output, Mapping):
+         return None
+@@ -124,19 +147,26 @@ def fish_omni_to_dac_decoder_async_chunk_batch(
+                 mask = keep[offset : offset + count]
+                 rows[index] = stacked[offset : offset + count][mask, 1:] if any(mask) else None
+             offset += count
++    # A stream starting in this step sizes its ramp by the step's requests.
++    running = len(requests)
+     return [
+-        _advance(transfer_manager, _request_id(request), rows[index], bool(is_finished[index]))
++        _advance(transfer_manager, _request_id(request), rows[index], bool(is_finished[index]), running)
+         for index, request in enumerate(requests)
+     ]
+ 
+ 
+ def _advance(
+-    transfer_manager: Any, request_id: str, codes: np.ndarray | None, finished: bool
++    transfer_manager: Any,
++    request_id: str,
++    codes: np.ndarray | None,
++    finished: bool,
++    running: int | None = None,
+ ) -> OmniPayloadStruct | None:
+-    ramp, chunk, left_context = _config(transfer_manager)
++    ramps, chunk, left_context = _config(transfer_manager)
+     state = _state(transfer_manager, request_id)
+     if state["done"]:
+         return None
++    ramp = _ramp(transfer_manager, state, ramps, running)
+     if codes is not None:
+         state["codes"].extend(codes)
+ 

@@ -1,0 +1,139 @@
+{
+ "note": "alignment heads for fishaudio/drama-3@b2b5ee998034b2975720906c815e7fb0e9f007bd; ranked by mean score across 2 condition(s): cloned, zeroshot",
+ "model": "fishaudio/drama-3",
+ "revision": "b2b5ee998034b2975720906c815e7fb0e9f007bd",
+ "layer_index_space": "model layer index 0..39 (full-attention layers [3, 7, 11, 15, 19, 23, 27, 31, 35, 39])",
+ "n_heads_per_layer": 16,
+ "score": "path_mass * monotonicity * min(2*coverage, 1), target columns only, mean over utterances",
+ "numba": true,
+ "conditions": [
+  "cloned",
+  "zeroshot"
+ ],
+ "uniform_target_mass": {
+  "cloned": 0.07711138056450642,
+  "zeroshot": 0.3798583027567847
+ },
+ "heads": [
+  {
+   "layer": 27,
+   "head": 9,
+   "score": 0.8257,
+   "target_mass": 0.7284,
+   "cloned": {
+    "score": 0.8585,
+    "path_mass": 0.8819,
+    "monotonicity": 0.9734,
+    "coverage": 0.9909,
+    "target_mass": 0.7395
+   },
+   "zeroshot": {
+    "score": 0.7929,
+    "path_mass": 0.8417,
+    "monotonicity": 0.942,
+    "coverage": 0.9766,
+    "target_mass": 0.7173
+   }
+  },
+  {
+   "layer": 31,
+   "head": 4,
+   "score": 0.8029,
+   "target_mass": 0.7363,
+   "cloned": {
+    "score": 0.8302,
+    "path_mass": 0.859,
+    "monotonicity": 0.9665,
+    "coverage": 0.9909,
+    "target_mass": 0.7544
+   },
+   "zeroshot": {
+    "score": 0.7756,
+    "path_mass": 0.8156,
+    "monotonicity": 0.951,
+    "coverage": 0.9929,
+    "target_mass": 0.7182
+   }
+  },
+  {
+   "layer": 31,
+   "head": 6,
+   "score": 0.7746,
+   "target_mass": 0.703,
+   "cloned": {
+    "score": 0.7907,
+    "path_mass": 0.822,
+    "monotonicity": 0.9618,
+    "coverage": 0.9909,
+    "target_mass": 0.7077
+   },
+   "zeroshot": {
+    "score": 0.7584,
+    "path_mass": 0.8071,
+    "monotonicity": 0.9397,
+    "coverage": 1.0,
+    "target_mass": 0.6982
+   }
+  },
+  {
+   "layer": 31,
+   "head": 0,
+   "score": 0.7547,
+   "target_mass": 0.6893,
+   "cloned": {
+    "score": 0.7856,
+    "path_mass": 0.8179,
+    "monotonicity": 0.9606,
+    "coverage": 0.9756,
+    "target_mass": 0.7071
+   },
+   "zeroshot": {
+    "score": 0.7238,
+    "path_mass": 0.7681,
+    "monotonicity": 0.9423,
+    "coverage": 0.9929,
+    "target_mass": 0.6715
+   }
+  },
+  {
+   "layer": 27,
+   "head": 6,
+   "score": 0.7453,
+   "target_mass": 0.5458,
+   "cloned": {
+    "score": 0.7736,
+    "path_mass": 0.8119,
+    "monotonicity": 0.9528,
+    "coverage": 0.9756,
+    "target_mass": 0.5452
+   },
+   "zeroshot": {
+    "score": 0.7169,
+    "path_mass": 0.7722,
+    "monotonicity": 0.9283,
+    "coverage": 0.99,
+    "target_mass": 0.5465
+   }
+  },
+  {
+   "layer": 27,
+   "head": 0,
+   "score": 0.7366,
+   "target_mass": 0.5372,
+   "cloned": {
+    "score": 0.7734,
+    "path_mass": 0.8146,
+    "monotonicity": 0.9495,
+    "coverage": 1.0,
+    "target_mass": 0.5435
+   },
+   "zeroshot": {
+    "score": 0.6999,
+    "path_mass": 0.7651,
+    "monotonicity": 0.9147,
+    "coverage": 0.9857,
+    "target_mass": 0.531
+   }
+  }
+ ]
+}

@@ -1,0 +1,8 @@
+# the repo-level *.pth rule is for model weights; this .pth is a 1-line site hook
+!hook/drama3_align.pth
+.venv/
+__pycache__/
+.pytest_cache/
+out/
+*.npz
+*.wav

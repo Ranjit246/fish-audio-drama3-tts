@@ -1,0 +1,16 @@
+# Step (f): static middle ground for 32-64 streams. 4-frame first window (186 ms
+# buffered; the 6-frame second window needs ~6 x 26 ms = 156 ms at c=32), stock
+# prefill admission kept ON, max_num_seqs 64. Compare with stock_c64 (352 ms,
+# 13.7 % strict stalls) and c_topk at c=32 (117 ms but 63.6 % audible stalls).
+base_config: /PATH/TO/site-packages/vllm_omni/deploy/fish_omni.yaml
+connectors:
+  connector_of_shared_memory:
+    extra:
+      codec_chunk_ramp: "4,6,12,24,32"
+stages:
+  - stage_id: 0
+    max_num_seqs: 64
+    hf_overrides:
+      fish_omni_max_top_k: 128
+  - stage_id: 1
+    max_num_seqs: 64

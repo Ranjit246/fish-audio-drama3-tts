@@ -1,0 +1,18 @@
+# Fish Audio Drama 3 with word timestamps from the model's own attention: an
+# overlay on fish_omni.yaml. Stage 0 stashes each request's text keys of the
+# alignment heads' layers (27 and 31) and scores every generated frame against
+# them inside its CUDA graphs; requests with "word_timestamps": true get
+# speech.alignment.delta SSE events (or the X-Word-Timestamps header).
+# Cost: 3 x (max_num_seqs + 1) x 512 x 256 fp16 of stash (~100 MiB at 128
+# sequences) and one small einsum per selected layer per step.
+# Launch: vllm serve fishaudio/drama-3 --omni --deploy-config vllm_omni/deploy/fish_omni_word_timestamps.yaml
+base_config: fish_omni.yaml
+stages:
+  - stage_id: 0
+    hf_overrides:
+      fish_omni_word_timestamps: true
+      # The head set swept for fishaudio/drama-3 (model layer index, head);
+      # re-sweep for another checkpoint. The default is this list.
+      fish_omni_alignment_heads: [[27, 9], [31, 4], [31, 6], [31, 0], [27, 6], [27, 0]]
+      # Text tokens a request may have for timestamps (longer texts get none).
+      fish_omni_alignment_max_text: 512

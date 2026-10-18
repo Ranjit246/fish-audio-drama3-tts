@@ -1,0 +1,279 @@
+{
+ "npz": "align_capture/req_10.npz",
+ "utt": "common_voice_en_20080005-common_voice_en_20080006",
+ "condition": "cloned",
+ "text": "It is situated across the northeastern rim of the older and larger crater Danjon.",
+ "heads": [
+  {
+   "layer": 27,
+   "head": 9
+  },
+  {
+   "layer": 31,
+   "head": 4
+  },
+  {
+   "layer": 31,
+   "head": 6
+  },
+  {
+   "layer": 31,
+   "head": 0
+  },
+  {
+   "layer": 27,
+   "head": 6
+  },
+  {
+   "layer": 27,
+   "head": 0
+  }
+ ],
+ "frame_ms": 46.439909297052154,
+ "frame_offset": 0,
+ "steps": 126,
+ "path": [
+  0,
+  1,
+  1,
+  1,
+  2,
+  2,
+  2,
+  2,
+  2,
+  2,
+  2,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  4,
+  4,
+  4,
+  4,
+  4,
+  4,
+  4,
+  4,
+  5,
+  5,
+  5,
+  5,
+  5,
+  5,
+  5,
+  5,
+  5,
+  5,
+  6,
+  6,
+  6,
+  6,
+  6,
+  6,
+  6,
+  6,
+  6,
+  6,
+  6,
+  6,
+  7,
+  7,
+  7,
+  7,
+  7,
+  7,
+  7,
+  7,
+  8,
+  8,
+  8,
+  8,
+  8,
+  8,
+  8,
+  9,
+  9,
+  9,
+  9,
+  9,
+  9,
+  9,
+  10,
+  10,
+  10,
+  10,
+  10,
+  10,
+  10,
+  11,
+  11,
+  11,
+  11,
+  11,
+  11,
+  11,
+  11,
+  12,
+  12,
+  12,
+  12,
+  12,
+  12,
+  12,
+  12,
+  12,
+  13,
+  13,
+  13,
+  13,
+  13,
+  13,
+  13,
+  13,
+  13,
+  13,
+  13,
+  14,
+  14,
+  14,
+  14,
+  14,
+  14,
+  15,
+  15,
+  15,
+  15,
+  15,
+  15,
+  15,
+  15,
+  15,
+  15,
+  15
+ ],
+ "words": [
+  {
+   "word": "It",
+   "start_ms": 0.0,
+   "end_ms": 46.4,
+   "columns": [
+    0
+   ]
+  },
+  {
+   "word": "is",
+   "start_ms": 46.4,
+   "end_ms": 185.8,
+   "columns": [
+    1
+   ]
+  },
+  {
+   "word": "situated",
+   "start_ms": 185.8,
+   "end_ms": 510.8,
+   "columns": [
+    2
+   ]
+  },
+  {
+   "word": "across",
+   "start_ms": 510.8,
+   "end_ms": 1021.7,
+   "columns": [
+    3
+   ]
+  },
+  {
+   "word": "the",
+   "start_ms": 1021.7,
+   "end_ms": 1393.2,
+   "columns": [
+    4
+   ]
+  },
+  {
+   "word": "northeastern",
+   "start_ms": 1393.2,
+   "end_ms": 1857.6,
+   "columns": [
+    5
+   ]
+  },
+  {
+   "word": "rim",
+   "start_ms": 1857.6,
+   "end_ms": 2414.9,
+   "columns": [
+    6
+   ]
+  },
+  {
+   "word": "of",
+   "start_ms": 2414.9,
+   "end_ms": 2786.4,
+   "columns": [
+    7
+   ]
+  },
+  {
+   "word": "the",
+   "start_ms": 2786.4,
+   "end_ms": 3111.5,
+   "columns": [
+    8
+   ]
+  },
+  {
+   "word": "older",
+   "start_ms": 3111.5,
+   "end_ms": 3436.6,
+   "columns": [
+    9
+   ]
+  },
+  {
+   "word": "and",
+   "start_ms": 3436.6,
+   "end_ms": 3761.6,
+   "columns": [
+    10
+   ]
+  },
+  {
+   "word": "larger",
+   "start_ms": 3761.6,
+   "end_ms": 4133.2,
+   "columns": [
+    11
+   ]
+  },
+  {
+   "word": "crater",
+   "start_ms": 4133.2,
+   "end_ms": 4551.1,
+   "columns": [
+    12
+   ]
+  },
+  {
+   "word": "Danjon.",
+   "start_ms": 4551.1,
+   "end_ms": 5851.4,
+   "columns": [
+    13,
+    14,
+    15
+   ]
+  }
+ ]
+}

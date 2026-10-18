@@ -1,0 +1,18 @@
+# Step (e): (c) with a 3-frame first window instead of 2. The 2-frame ramp gave
+# 49 ms TTFA at c=1 but 10.7 % strict micro-underruns at c=16 (second window
+# must arrive within the 93 ms the first one buys). 3 frames buffer 139 ms.
+base_config: /PATH/TO/site-packages/vllm_omni/deploy/fish_omni.yaml
+connectors:
+  connector_of_shared_memory:
+    extra:
+      codec_chunk_ramp: "3,6,12,24,32"
+      ar_prefill_admission_min_batch: 0
+      ar_prefill_admission_max_wait_ms: 0
+      ar_prefill_admission_min_running: 0
+stages:
+  - stage_id: 0
+    max_num_seqs: 32
+    hf_overrides:
+      fish_omni_max_top_k: 128
+  - stage_id: 1
+    max_num_seqs: 32

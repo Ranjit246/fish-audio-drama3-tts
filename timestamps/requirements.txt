@@ -1,0 +1,11 @@
+# CPU-testable toolchain for the Phase 0 head sweep (see README.md).
+# On the VM the hook itself needs nothing beyond the vllm venv's torch/numpy;
+# sweep/score/decode run in this environment (CPU is enough).
+torch
+numpy
+numba
+transformers
+huggingface_hub
+pytest
+aiohttp
+soundfile

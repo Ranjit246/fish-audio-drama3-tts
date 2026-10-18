@@ -1,0 +1,7 @@
+# Tuning step (a): smaller first codec windows for lower time-to-first-audio.
+# Stock ramp is 6,8,12,16,24,32 then 64 (sized for 128 streams on an H200).
+base_config: /PATH/TO/site-packages/vllm_omni/deploy/fish_omni.yaml
+connectors:
+  connector_of_shared_memory:
+    extra:
+      codec_chunk_ramp: "2,4,8,16,32"

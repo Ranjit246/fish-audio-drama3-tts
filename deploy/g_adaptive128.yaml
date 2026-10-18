@@ -1,0 +1,10 @@
+# Isolating run: the load-adaptive deploy (patched vllm-omni dev clone) with the
+# stock max_num_seqs 128 instead of 64. At c=64 the adaptive deploy showed 2.3 % and
+# 10 % audible stalls across two runs vs stock's 1.3 %, although both use the stock
+# 6-frame ramp there; the only remaining difference is the slot count.
+base_config: /PATH/TO/patched-vllm-omni/vllm_omni/deploy/fish_omni_low_latency.yaml
+stages:
+  - stage_id: 0
+    max_num_seqs: 128
+  - stage_id: 1
+    max_num_seqs: 128

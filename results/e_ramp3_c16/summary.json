@@ -1,0 +1,21 @@
+{
+  "concurrency": 16,
+  "mode": "codes",
+  "top_k": 100,
+  "n": 300,
+  "errors": 0,
+  "ttfa_p50_ms": 110.82190700017236,
+  "ttfa_p95_ms": 166.73094430020683,
+  "ttfa_p99_ms": 174.05355679969034,
+  "rtf_mean": 0.4080897439099856,
+  "rtf_p95": 0.431702582216515,
+  "audio_s_per_s": 38.12946849222419,
+  "frames_per_s": 821.0495900913511,
+  "stall_pct": 4.333333333333333,
+  "stall_100ms_pct": 0.0,
+  "runaway": 0,
+  "wall_s": 33.727560837000055,
+  "gpu_util_mean_pct": 99.8529411764706,
+  "gpu_util_max_pct": 100.0,
+  "gpu_mem_max_mib": 84835.0
+}

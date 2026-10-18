@@ -1,0 +1,3071 @@
+diff --git a/docs/serving/speech_api.md b/docs/serving/speech_api.md
+index f5700a318..2f282813b 100644
+--- a/docs/serving/speech_api.md
++++ b/docs/serving/speech_api.md
+@@ -152,6 +152,7 @@ Content-Type: application/json
+ | `non_streaming_mode` | bool | null | Qwen3-TTS prompt construction mode override. Does not affect HTTP response streaming or async-chunk pipelining. When null, Qwen3-TTS uses model defaults: Base=false, CustomVoice/VoiceDesign=true. |
+ | `stream` | bool | false | When true, stream OpenAI `speech.audio.*` SSE events (requires `response_format="pcm"` or `"wav"`). For raw PCM/WAV byte streaming, set `stream_format="audio"`. |
+ | `stream_format` | string | null | Streaming output format. `"audio"` streams raw audio bytes as they are decoded; `"sse"` streams OpenAI `speech.audio.*` Server-Sent Events. If omitted, `stream=true` selects SSE and `stream=false` remains non-streaming. See [Response Format](#response-format). |
++| `word_timestamps` | bool | false | Per-word timestamps. Non-streaming responses carry them in the `X-Word-Timestamps` header; with a model that aligns words from its own attention (Fish Audio Drama 3, see [Word timestamps](#word-timestamps)) SSE streams also carry `speech.alignment.delta` events. Other models need the server launched with `--forced-aligner` and do not stream them. |
+ 
+ **Supported languages:** Only applicable to Qwen3-TTS. Derived from the model configuration (`talker_config.codec_language_id` in the checkpoint's `config.json`), plus `Auto`, which is always accepted. Official Qwen3-TTS checkpoints support: Auto, Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, Italian.
+ 
+@@ -234,6 +235,15 @@ Each event has an `event:` line and a JSON `data:` line:
+     { "type": "speech.audio.error", "error": { "message": "...", "type": "server_error", "param": null, "code": 500 } }
+     ```
+ 
++- `speech.alignment.delta` — word timestamps, when `word_timestamps=true` and the
++    model aligns words from its own attention (see [Word timestamps](#word-timestamps)):
++
++    ```json
++    { "type": "speech.alignment.delta", "resolution_ms": 46.44,
++      "words": [ { "word": "Hello", "start_ms": 0, "end_ms": 325, "final": true },
++                 { "word": "there,", "start_ms": 325, "end_ms": 557, "final": false } ] }
++    ```
++
+ The `usage` object on `speech.audio.done` is the same shape returned per item by the
+ [batch endpoint](#batch-speech-generation):
+ 
+@@ -244,6 +254,43 @@ The `usage` object on `speech.audio.done` is the same shape returned per item by
+ - `output_tokens`: generated codec tokens
+ - `total_tokens` = `input_tokens` + `output_tokens`
+ 
++### Word timestamps
++
++Fish Audio Drama 3 (`fish_omni`) can time words with no forced aligner, no
++ASR and no second model: a few heads of its full-attention layers read the
++text in order while it speaks, and stage 0 captures their attention logits
++over the request's text for every codec frame (one frame per decode step,
++44100 / 2048 = 21.53 Hz, so the resolution is 46.44 ms). Enable the capture on
++stage 0 with `hf_overrides` `fish_omni_word_timestamps: true` (the packaged
++overlay `vllm_omni/deploy/fish_omni_word_timestamps.yaml` does this), then
++send `"word_timestamps": true`:
++
++- **SSE stream** (`stream=true`): after each `speech.audio.delta` whose frames
++  settled words, a `speech.alignment.delta` event lists the words whose state
++  changed, in text order. `final: true` words are settled and never change
++  again; `final: false` words are the ones being spoken, whose spans still
++  grow. A last `speech.alignment.delta` with every word `final` precedes
++  `speech.audio.done`; its last word carries `tail_silence_ms`, an estimate of
++  the trailing silence the last word's span absorbs (the model keeps reading
++  the last word until end of speech), from the utterance's own speaking rate.
++  Words are decoded after the audio chunk is sent, so first audio is not
++  delayed; a word settles about four frames (190 ms) after it ends.
++  Milliseconds are integers; `resolution_ms` is the frame length.
++- **Non-streaming**: the `X-Word-Timestamps` header, a JSON list of
++  `{word, start_ms, end_ms}` (the last with `tail_silence_ms`), as with the
++  forced aligner (4 KB cap, `X-Word-Timestamps-Omitted` beyond it).
++- `stream_format="audio"` has no room for the words and is rejected with
++  `word_timestamps=true`. The WebSocket `/v1/audio/speech/stream` path keeps
++  the forced-aligner implementation.
++
++Words are whitespace-delimited; a token shared by two words gives both the
++same span, and a word the attention never dwells on is interpolated between
++its neighbours. Texts of more than 512 tokens (`fish_omni_alignment_max_text`)
++get audio but no timestamps. Reading position comes from the model's own
++attention, so a boundary is typically within a frame or two of the audio; see
++the [Drama 3 recipe](https://github.com/vllm-project/vllm-omni/blob/main/recipes/fishaudio/Drama-3.md#word-timestamps)
++for the head set and its limits.
++
+ ### Voices Endpoint
+ 
+ ```text
+diff --git a/recipes/fishaudio/Drama-3.md b/recipes/fishaudio/Drama-3.md
+index 7400cfb61..cdd1bd024 100644
+--- a/recipes/fishaudio/Drama-3.md
++++ b/recipes/fishaudio/Drama-3.md
+@@ -165,6 +165,37 @@ concurrency 1, 88 ms at 16, 149 ms at 24 and 222 ms at 32 (stock 80 ms and
+ 162 ms at 1 and 16) with no audible stalls; at 64 it matches the stock ramp
+ (350 ms vs 352 ms, 2.3% vs 1.3% of streams stalling).
+ 
++#### Word timestamps
++
++`vllm_omni/deploy/fish_omni_word_timestamps.yaml` (an overlay on the default
++deploy) turns on `hf_overrides` `fish_omni_word_timestamps: true` for stage 0;
++requests with `"word_timestamps": true` then get per-word spans from the
++model's own attention: `speech.alignment.delta` SSE events beside the audio
++deltas, or the `X-Word-Timestamps` header on non-streaming responses (see the
++[speech API](../../docs/serving/speech_api.md#word-timestamps)). No forced
++aligner, ASR or second model is involved. Six heads of the backbone's
++full-attention layers read the text in order while the model speaks
++(`fish_omni_alignment_heads`, default `L27H9, L31H4, L31H6, L31H0, L27H6,
++L27H0`, found by sweeping all 160 heads of this checkpoint on cloned and
++zero-shot Seed-TTS lines; another checkpoint needs its own sweep). At each
++decode step the two layers' attention pre-hooks score the request's sampling
++row against its stashed text keys inside the step's CUDA graph: one small
++einsum per layer and ~100 MiB of fp16 key stash at 128 sequences, for every
++request (a request without `word_timestamps` only pays the einsum). The
++rows ride with each codec window to the API server, which runs a softmax over
++the text tokens, a mean over heads and a monotonic path search, and maps the
++frame of each text token to words through the tokenizer's offsets.
++
++Resolution is one codec frame, 46.44 ms (21.53 Hz); expect boundaries within
++a frame or two of the audio on clean speech. Limits: texts of up to 512
++tokens (`fish_omni_alignment_max_text`); whitespace-delimited words (English
++and other space-delimited scripts first; a script without spaces yields one
++word); the last word's span absorbs the trailing silence, reported as an
++estimate in `tail_silence_ms`; `stream_format="audio"` cannot carry the words
++(use SSE or a non-streaming request). The capture runs inside the compiled
++forward and the FULL decode graphs; `enforce_eager` is not needed and would
++cost most of the throughput.
++
+ #### Measured performance (1x H200, both stages on one GPU)
+ 
+ Default `vllm_omni/deploy/fish_omni.yaml` (vLLM 0.31.0). Seed-TTS-Eval en
+diff --git a/tests/engine/test_multimodal_accumulation.py b/tests/engine/test_multimodal_accumulation.py
+index 57162ec1e..7fdfd097c 100644
+--- a/tests/engine/test_multimodal_accumulation.py
++++ b/tests/engine/test_multimodal_accumulation.py
+@@ -89,3 +89,17 @@ def test_meta_finished_consolidates_to_latest_flag_without_cat():
+     payload.consolidate_tensors(OutputModality.TEXT)
+ 
+     assert bool(payload["meta.finished"].reshape(())) is True
++
++
++def test_per_chunk_alignment_rows_are_drained_with_the_audio_delta():
++    """Word-alignment logits belong to one chunk: a DELTA consumer must never see
++    earlier chunks' rows again (fish_omni word timestamps re-timed later words
++    by the frames of every previous window before this drain)."""
++    first = MultimodalPayload.from_dict({"audio": torch.zeros(4), "alignment": torch.zeros((2, 6, 5))})
++    assert first is not None
++    drain_delta_payload(first)
++    assert "alignment" not in first and "audio" not in first
++    second = MultimodalPayload.from_dict({"audio": torch.zeros(4), "alignment": torch.ones((3, 6, 5))})
++    assert second is not None
++    merged = first.merged_with(second)
++    assert torch.equal(merged["alignment"], torch.ones((3, 6, 5)))
+diff --git a/tests/entrypoints/openai_api/test_fish_omni_word_timestamps.py b/tests/entrypoints/openai_api/test_fish_omni_word_timestamps.py
+new file mode 100644
+index 000000000..4fee20189
+--- /dev/null
++++ b/tests/entrypoints/openai_api/test_fish_omni_word_timestamps.py
+@@ -0,0 +1,192 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
++"""Word timestamps from Drama 3's own attention at the speech endpoint: the
++adapter's capability and request parameters, and the SSE event order
++(``speech.alignment.delta`` after the audio delta its frames arrived with)."""
++
++import json
++import types
++
++import numpy as np
++import pytest
++import torch
++
++from vllm_omni.entrypoints.openai.protocol.audio import OpenAICreateSpeechRequest
++from vllm_omni.entrypoints.openai.serving_speech import OmniOpenAIServingSpeech
++from vllm_omni.entrypoints.openai.tts_adapters import resolve_adapter
++from vllm_omni.entrypoints.openai.tts_adapters.base import SpeechServingContext
++from vllm_omni.entrypoints.openai.tts_adapters.fish_omni import FishOmniAdapter
++from vllm_omni.utils.attention_alignment import FRAME_MS
++
++pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
++
++TEXT = "one two three four"
++
++
++TAG = "<|speaker:0|>"
++
++
++class _Tokenizer:
++    """One token per character and one control token for the speaker tag, with character offsets."""
++
++    def _pieces(self, text):
++        if text.startswith(TAG):
++            yield 999, (0, len(TAG))
++            text, base = text[len(TAG) :], len(TAG)
++        else:
++            base = 0
++        for i, c in enumerate(text):
++            yield ord(c) % 900, (base + i, base + i + 1)
++
++    def encode(self, text, add_special_tokens=False):
++        return [token for token, _ in self._pieces(text)]
++
++    def convert_tokens_to_ids(self, token):
++        return 999 if token == TAG else ord(token[0]) % 900
++
++    def __call__(self, text, add_special_tokens=False, return_offsets_mapping=False):
++        pieces = list(self._pieces(text))
++        return {"input_ids": [t for t, _ in pieces], "offset_mapping": [o for _, o in pieces]}
++
++
++class _Server:
++    _tts_executor = None
++    uploaded_speakers: dict = {}
++    forced_aligner_enabled = False
++
++    def _apply_uploaded_speaker(self, request):
++        return None
++
++    def _validate_ref_audio_format(self, ref_audio):
++        return None
++
++
++def _engine(enabled: bool, max_text: int | None = None):
++    hf_config = types.SimpleNamespace(audio_decoder_config=types.SimpleNamespace(num_codebooks=10, vocab_size=4096))
++    if enabled:
++        hf_config.fish_omni_word_timestamps = True
++    if max_text is not None:
++        hf_config.fish_omni_alignment_max_text = max_text
++    return types.SimpleNamespace(
++        model_config=types.SimpleNamespace(hf_config=hf_config, max_model_len=8192, model="fishaudio/drama-3")
++    )
++
++
++def _adapter(enabled: bool, max_text: int | None = None, server=None) -> FishOmniAdapter:
++    adapter = FishOmniAdapter(SpeechServingContext(server=server or _Server(), engine_client=_engine(enabled, max_text)))
++    adapter._tokenizer = _Tokenizer()
++    return adapter
++
++
++def _request(**kw) -> OpenAICreateSpeechRequest:
++    body = {"input": TEXT, "word_timestamps": True}
++    body.update(kw)
++    return OpenAICreateSpeechRequest(**body)
++
++
++def test_capability_follows_the_stage_0_override():
++    assert resolve_adapter("fish_omni_tts") is FishOmniAdapter  # the registry is keyed by adapter name
++    assert not _adapter(False).supports_attention_alignment()
++    assert _adapter(True).supports_attention_alignment()
++
++
++def test_without_capture_or_aligner_the_request_is_rejected_with_a_hint():
++    error = _adapter(False).validate(_request())
++    assert error is not None and "fish_omni_word_timestamps" in error and "--forced-aligner" in error
++    assert _adapter(True).validate(_request()) is None
++
++
++@pytest.mark.asyncio
++async def test_build_marks_the_request_and_prepares_the_word_decoder_parameters():
++    adapter = _adapter(True)
++    prepared = await adapter.build(_request(), [], False)
++    assert prepared.prompt["additional_information"]["word_timestamps"] is True
++    params = prepared.tts_params["word_alignment"]
++    assert params["text"] == TEXT
++    # The character tokenizer keeps the space after the speaker tag as the first column.
++    assert len(params["offsets"]) == len(TEXT) + 1 and params["offsets"][0] == [0, 0]
++    assert params["offsets"][1:] == [[i, i + 1] for i in range(len(TEXT))]
++    # Without the flag nothing is added.
++    plain = await adapter.build(_request(word_timestamps=False), [], False)
++    assert "word_timestamps" not in plain.prompt["additional_information"] and "word_alignment" not in plain.tts_params
++
++
++@pytest.mark.asyncio
++async def test_texts_beyond_the_capture_capacity_are_rejected():
++    with pytest.raises(ValueError, match="up to 4 tokens"):
++        await _adapter(True, max_text=4).build(_request(), [], False)
++
++
++def _serving(enabled: bool = True) -> OmniOpenAIServingSpeech:
++    serving = OmniOpenAIServingSpeech.__new__(OmniOpenAIServingSpeech)
++    serving._tts_model_type = FishOmniAdapter.name
++    serving._diffusion_mode = False
++    serving.forced_aligner_enabled = False
++    serving.engine_client = _engine(enabled)
++    serving._adapter = FishOmniAdapter(SpeechServingContext(server=serving, engine_client=serving.engine_client))
++    serving._build_speech_usage = lambda *args, **kwargs: types.SimpleNamespace(model_dump=lambda: {"total_tokens": 0})
++    return serving
++
++
++def test_the_request_gate_knows_which_models_align_from_attention():
++    assert _serving(True)._uses_attention_alignment(_request())
++    assert not _serving(True)._uses_attention_alignment(_request(word_timestamps=False))
++    assert not _serving(False)._uses_attention_alignment(_request())
++
++
++def _planted_rows(path: np.ndarray, n_text: int, heads: int = 2) -> torch.Tensor:
++    rows = np.zeros((len(path), heads, n_text), dtype=np.float32)
++    rows[np.arange(len(path)), :, path] = 8.0
++    return torch.from_numpy(rows).to(torch.float16)
++
++
++@pytest.mark.asyncio
++async def test_alignment_events_follow_the_audio_delta_that_brought_their_frames():
++    serving = _serving()
++    words = TEXT.split()
++    offsets = [[0, 0]] + [[TEXT.index(w), TEXT.index(w) + len(w)] for w in words]  # space column + one per word
++    n_text = len(offsets)
++    # 30 frames read the four words in turn (column 0 is the space after the tag).
++    path = 1 + np.minimum(np.arange(30) * 4 // 30, 3)
++    chunks = [path[:8], path[8:18], path[18:30]]
++
++    async def results():
++        for rows in chunks:
++            yield types.SimpleNamespace(
++                multimodal_output={
++                    "model_outputs": torch.zeros(len(rows) * 2048),
++                    "sr": 44100,
++                    "alignment": _planted_rows(rows, n_text),
++                }
++            )
++        yield types.SimpleNamespace(multimodal_output={"model_outputs": torch.empty(0), "sr": 44100})
++
++    request = _request(stream=True, response_format="pcm")
++    tts_params = {"word_alignment": {"text": TEXT, "offsets": offsets}}
++    events = []
++    async for event in serving._generate_audio_sse_events(results(), "req", "pcm", request=request, tts_params=tts_params):
++        kind, data = event.split("\n")[0].removeprefix("event: "), json.loads(event.split("\ndata: ")[1])
++        events.append((kind, data))
++    kinds = [kind for kind, _ in events]
++    assert kinds[-1] == "speech.audio.done"
++    assert kinds.count("speech.audio.delta") == 3
++    alignment = [data for kind, data in events if kind == "speech.alignment.delta"]
++    assert alignment, "no speech.alignment.delta events"
++    # Every alignment event follows an audio delta (never precedes the first one),
++    # and the last one, with every word final, comes right before speech.audio.done.
++    for index, kind in enumerate(kinds):
++        if kind == "speech.alignment.delta":
++            assert "speech.audio.delta" in kinds[:index]
++    assert kinds[-2] == "speech.alignment.delta"
++    final = alignment[-1]
++    assert [w["word"] for w in final["words"]] == words and all(w["final"] for w in final["words"])
++    assert final["resolution_ms"] == round(FRAME_MS, 2) and "tail_silence_ms" in final["words"][-1]
++    assert final["words"][0]["start_ms"] == 0 and final["words"][-1]["end_ms"] == round(30 * FRAME_MS)
++    # Earlier events settle words in order: a word reported final keeps its span in the final list.
++    settled = {w["word"]: (w["start_ms"], w["end_ms"]) for event in alignment[:-1] for w in event["words"] if w["final"]}
++    assert settled and all((w["start_ms"], w["end_ms"]) == settled[w["word"]] for w in final["words"] if w["word"] in settled)
++    # Within an event, final words come first; the provisional ones (the words the
++    # path has reached but not settled, up to four frames behind) follow.
++    for event in alignment[:-1]:
++        flags = [w["final"] for w in event["words"]]
++        assert flags == sorted(flags, reverse=True)
+diff --git a/tests/model_executor/models/fish_omni/test_fish_omni_alignment.py b/tests/model_executor/models/fish_omni/test_fish_omni_alignment.py
+new file mode 100644
+index 000000000..e00d5d6eb
+--- /dev/null
++++ b/tests/model_executor/models/fish_omni/test_fish_omni_alignment.py
+@@ -0,0 +1,204 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
++"""CPU tests for the Drama 3 word-alignment capture: head grouping, the static
++stash / logits buffers and the attention pre-hook, on a small fake backbone."""
++
++from types import SimpleNamespace
++
++import pytest
++import torch
++from torch import nn
++
++from vllm_omni.model_executor.models.fish_omni import alignment as al
++
++pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
++
++HEADS, KV_HEADS, HEAD_DIM = 4, 2, 8  # two query heads per KV head
++MAX_TEXT = 5
++CPU = torch.device("cpu")
++
++
++class _Attention(nn.Module):
++    """Stands for vLLM's ``Attention``: receives (q, k, v) and knows its layer name."""
++
++    def __init__(self, layer: int) -> None:
++        super().__init__()
++        self.layer_name = f"model.layers.{layer}.self_attn.attn"
++
++    def forward(self, q, k, v):
++        return v
++
++
++class _SelfAttention(nn.Module):
++    num_heads, num_kv_heads, head_dim = HEADS, KV_HEADS, HEAD_DIM
++
++    def __init__(self, layer: int) -> None:
++        super().__init__()
++        self.attn = _Attention(layer)
++
++    def forward(self, q, k, v):
++        return self.attn(q, k, v)
++
++
++class _Layer(nn.Module):
++    def __init__(self, layer: int, full: bool) -> None:
++        super().__init__()
++        if full:
++            self.self_attn = _SelfAttention(layer)
++
++
++def _capture(heads, *, max_num_seqs=3, max_tokens=16) -> al.AlignmentCapture:
++    head_set = al.AlignmentHeadSet(heads, num_heads=HEADS, num_kv_heads=KV_HEADS)
++    return al.AlignmentCapture(
++        head_set,
++        max_num_tokens=max_tokens,
++        max_num_seqs=max_num_seqs,
++        max_text=MAX_TEXT,
++        num_heads=HEADS,
++        num_kv_heads=KV_HEADS,
++        head_dim=HEAD_DIM,
++        scaling=HEAD_DIM**-0.5,
++        device=CPU,
++    )
++
++
++def _reference(q_row: torch.Tensor, keys: torch.Tensor, head: int) -> torch.Tensor:
++    """``q[head] . K[kv(head)]^T * scale`` in fp32 over the stashed text rows."""
++    q = q_row.reshape(HEADS, HEAD_DIM)[head].float()
++    k = keys.reshape(-1, KV_HEADS, HEAD_DIM)[:, head // (HEADS // KV_HEADS)].float()
++    return (k @ q) * HEAD_DIM**-0.5
++
++
++def test_head_set_groups_heads_by_layer_in_buffer_order():
++    head_set = al.AlignmentHeadSet([(3, 1), (7, 2), (3, 3)], num_heads=HEADS, num_kv_heads=KV_HEADS)
++    # Stable re-order by layer: each layer's heads form one block of the logits buffer.
++    assert head_set.heads == ((3, 1), (3, 3), (7, 2))
++    assert head_set.layers == (3, 7)
++    assert head_set.layer_heads == {3: [0, 1], 7: [2]}
++    # Head 1 reads KV head 0, head 3 KV head 1, head 2 KV head 1 (only that one is stashed for layer 7).
++    assert head_set.layer_kv == {3: [0, 1], 7: [1]}
++    assert head_set.layer_kv_pos == {3: [0, 1], 7: [0]}
++    with pytest.raises(ValueError, match="out of range"):
++        al.AlignmentHeadSet([(3, HEADS)], num_heads=HEADS, num_kv_heads=KV_HEADS)
++
++
++@pytest.mark.parametrize(
++    ("value", "expected"),
++    [
++        (None, al.DEFAULT_ALIGNMENT_HEADS),
++        ("27:9,31:4", ((27, 9), (31, 4))),
++        ([[27, 9], [31, 4]], ((27, 9), (31, 4))),
++        ([{"layer": 27, "head": 9}], ((27, 9),)),
++    ],
++)
++def test_parse_alignment_heads(value, expected):
++    assert al.parse_alignment_heads(value) == expected
++
++
++def test_parse_alignment_heads_rejects_duplicates_and_empty():
++    with pytest.raises(ValueError, match="repeats"):
++        al.parse_alignment_heads("27:9,27:9")
++    with pytest.raises(ValueError, match="no heads"):
++        al.parse_alignment_heads([])
++
++
++def test_alignment_config_is_off_by_default():
++    assert al.alignment_config(SimpleNamespace()) == (False, al.DEFAULT_ALIGNMENT_HEADS, al.DEFAULT_MAX_TEXT)
++    config = SimpleNamespace(
++        fish_omni_word_timestamps=True, fish_omni_alignment_heads="3:1", fish_omni_alignment_max_text=64
++    )
++    assert al.alignment_config(config) == (True, ((3, 1),), 64)
++    with pytest.raises(ValueError, match="positive"):
++        al.alignment_config(SimpleNamespace(fish_omni_alignment_max_text=0))
++
++
++def test_prefill_stashes_text_rows_and_scores_the_sample_row():
++    torch.manual_seed(0)
++    capture = _capture([(3, 1), (3, 3), (7, 2)])
++    # One request in slot 1: a 6-row prompt whose text occupies rows 2, 3, 4;
++    # its sample row is the last prompt row (5). Other rows write the scratch slot.
++    n_text, slot = 3, 1
++    capture.row_slot[2:5] = slot
++    capture.row_pos[2:5] = torch.arange(n_text)
++    capture.begin_step(1, torch.tensor([5, 0, 0]), torch.tensor([slot, 0, 0]))
++    q = torch.randn(6, HEADS * HEAD_DIM, dtype=torch.bfloat16)
++    k3 = torch.randn(6, KV_HEADS * HEAD_DIM, dtype=torch.bfloat16)
++    k7 = torch.randn(6, KV_HEADS * HEAD_DIM, dtype=torch.bfloat16)
++    capture.capture(3, q, k3)
++    capture.capture(7, q, k7)
++
++    stash3 = capture.stash[3]
++    assert stash3.shape == (4, 2, MAX_TEXT, HEAD_DIM) and stash3.dtype == torch.float16
++    keys = k3[2:5].reshape(n_text, KV_HEADS, HEAD_DIM).to(torch.float16)
++    assert torch.equal(stash3[slot, :, :n_text], keys.transpose(0, 1))
++    assert torch.all(stash3[slot, :, n_text:] == 0)
++    # Layer 7 stashes only KV head 1 (the one head 2 reads).
++    assert capture.stash[7].shape[1] == 1
++    assert torch.equal(capture.stash[7][slot, 0, :n_text], k7[2:5].reshape(n_text, KV_HEADS, HEAD_DIM)[:, 1].half())
++    # Untouched slots stay zero; the scratch slot took the other rows.
++    assert torch.all(stash3[0] == 0) and torch.all(stash3[2] == 0)
++    assert torch.any(stash3[capture.scratch_slot] != 0)
++
++    logits = capture.logits[0]
++    assert capture.logits.shape == (3, 3, MAX_TEXT) and logits.dtype == torch.float32
++    for index, (layer, head) in enumerate(capture.head_set.heads):
++        expected = _reference(q[5].half(), (k3 if layer == 3 else k7)[2:5].half(), head)
++        torch.testing.assert_close(logits[index, :n_text], expected, rtol=2e-2, atol=2e-2)
++        assert torch.all(logits[index, n_text:] == 0)
++
++
++def test_decode_rows_score_against_their_slots_and_stash_nothing():
++    torch.manual_seed(1)
++    capture = _capture([(3, 0)])
++    # Slot 2 holds two stashed text keys (KV head 0, the one head 0 reads); slot 0 holds none.
++    keys = torch.randn(2, KV_HEADS, HEAD_DIM).half()
++    capture.stash[3][2, 0, :2] = keys[:, 0]
++    before = capture.stash[3][:3].clone()
++    capture.row_slot[:4].fill_(capture.scratch_slot)
++    capture.begin_step(2, torch.tensor([0, 1, 0]), torch.tensor([2, 0, 0]))
++    q = torch.randn(4, HEADS * HEAD_DIM, dtype=torch.bfloat16)  # padded decode batch of 4 rows
++    capture.capture(3, q, torch.randn(4, KV_HEADS * HEAD_DIM, dtype=torch.bfloat16))
++    assert torch.equal(capture.stash[3][:3], before)
++    torch.testing.assert_close(
++        capture.logits[0, 0, :2], _reference(q[0].half(), keys.reshape(2, -1), 0), rtol=2e-2, atol=2e-2
++    )
++    assert torch.all(capture.logits[1, 0] == 0)
++
++
++def test_extract_returns_owned_fp16_rows():
++    capture = _capture([(3, 0), (3, 2)])
++    capture.logits[1, :, :4] = torch.arange(8, dtype=torch.float32).reshape(2, 4)
++    capture.logits[2, :, :4] = -1.0
++    out = capture.extract(torch.tensor([2, 1]), 4)
++    assert out.shape == (2, 2, 4) and out.dtype == torch.float16
++    assert out[1].tolist() == [[0.0, 1.0, 2.0, 3.0], [4.0, 5.0, 6.0, 7.0]]
++    assert torch.all(out[0] == -1)
++    out[1].zero_()
++    assert capture.logits[1, 0, 1] == 1.0
++
++
++def test_hooks_capture_from_the_selected_layers_only():
++    layers = [_Layer(index, full=index in (3, 7)) for index in range(8)]
++    capture = _capture([(3, 1), (7, 0)])
++    hooks = al.install_alignment_hooks(layers, capture)
++    assert sorted(hooks) == [3, 7]
++    capture.begin_step(1, torch.tensor([0, 0, 0]), torch.tensor([1, 0, 0]))
++    capture.stash[3][1, :, :2] = 1.0
++    q = torch.ones(1, HEADS * HEAD_DIM)
++    k = torch.zeros(1, KV_HEADS * HEAD_DIM)
++    layers[3].self_attn(q, k, k)
++    assert torch.all(capture.logits[0, 0, :2] == HEAD_DIM * HEAD_DIM**-0.5)
++    assert torch.all(capture.logits[0, 1] == 0)
++    layers[7].self_attn(q, k, k)
++    assert torch.all(capture.logits[0, 1] == 0)  # empty stash for slot 1 at layer 7
++
++
++def test_hooks_reject_layers_without_full_attention_or_with_another_index():
++    layers = [_Layer(index, full=index in (3, 7)) for index in range(8)]
++    with pytest.raises(ValueError, match="no full attention"):
++        al.install_alignment_hooks(layers, _capture([(2, 0)]))
++    with pytest.raises(ValueError, match="names layer 9"):
++        al.install_alignment_hooks(layers, _capture([(9, 0)]))
++    layers[7].self_attn.attn.layer_name = "model.layers.5.self_attn.attn"
++    with pytest.raises(ValueError, match="reports layer index 5"):
++        al.install_alignment_hooks(layers, _capture([(7, 0)]))
+diff --git a/tests/model_executor/models/fish_omni/test_fish_omni_model_state.py b/tests/model_executor/models/fish_omni/test_fish_omni_model_state.py
+index b6e887504..882d0461b 100644
+--- a/tests/model_executor/models/fish_omni/test_fish_omni_model_state.py
++++ b/tests/model_executor/models/fish_omni/test_fish_omni_model_state.py
+@@ -12,17 +12,22 @@ import torch
+ 
+ from vllm_omni.model_executor.models.fish_omni import model_state as ms
+ from vllm_omni.model_executor.models.fish_omni.fish_omni_model import FishOmniBuffers
++from vllm_omni.model_executor.models.fish_omni.prompt import PromptLayout
+ from vllm_omni.worker_v2.model_states.omni_model_state import OmniModelState
++from vllm_omni.worker_v2.output_snapshot import RequestOutputSnapshot
+ 
+ pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
+ 
+ CODEBOOKS = 3
+ PROMPT = torch.tensor([[7, 0, 0, 0], [8, 0, 0, 0], [100, 0, 1, 2], [101, 1, 2, 3]])
++# Rows 1 and 2 stand for the target text (row 0 for the speaker tag).
++TEXT_ROWS = range(1, 3)
+ 
+ 
+ class _Model:
+     frame_width = 1 + CODEBOOKS
+     max_top_k = 64
++    alignment = None
+ 
+     def __init__(self) -> None:
+         self.buffers = FishOmniBuffers(
+@@ -36,9 +41,9 @@ class _Model:
+         )
+         self.buffers.noise = torch.zeros((4, 5, 8))
+ 
+-    def build_frames(self, info, device):
++    def build_layout(self, info, device):
+         assert info["text"] == "hello"
+-        return PROMPT.clone()
++        return PromptLayout(PROMPT.clone(), TEXT_ROWS)
+ 
+ 
+ @pytest.fixture
+@@ -63,12 +68,39 @@ def make_state(monkeypatch):
+         state._seeds = {}
+         state._seed_generator = None
+         state._suspended = {}
++        state.alignment = None
++        state.align_text = np.zeros((4, 2), dtype=np.int64)
++        state._align_rows = []
++        state._warned_text_len = False
++        state._align_pool = None
++        state._partitioned = True
+         state.intermediate_buffer = SimpleNamespace(buffers={i: {"text": "hello"} for i in range(4)})
+         return state
+ 
+     return make
+ 
+ 
++class _Capture:
++    """Stands for fish_omni.alignment.AlignmentCapture: its static index buffers and capacity."""
++
++    def __init__(self, max_text=8, max_tokens=16, max_num_seqs=4) -> None:
++        self.max_text = max_text
++        self.scratch_slot = max_num_seqs
++        self.row_slot = torch.full((max_tokens,), self.scratch_slot, dtype=torch.int64)
++        self.row_pos = torch.zeros(max_tokens, dtype=torch.int64)
++        self.logits = torch.zeros((max_num_seqs, 2, max_text))
++
++    def extract(self, rows, n_text):
++        return self.logits.index_select(0, rows)[:, :, :n_text].to(torch.float16)
++
++
++class _HostPool:
++    """A UVA pool stand-in: the host array itself, as a tensor."""
++
++    def copy_to_uva(self, array):
++        return torch.from_numpy(np.ascontiguousarray(array))
++
++
+ def _request(req_id: str, generated: Sequence[int] = (), seed: int | None = None):
+     prompt = [1] * PROMPT.shape[0]
+     return SimpleNamespace(
+@@ -213,3 +245,78 @@ def test_max_top_k_is_a_power_of_two_from_the_ras_top_k_to_the_codebook(value, o
+     else:
+         with pytest.raises(ValueError, match="power of two"):
+             max_top_k(config, 4096)
++
++
++def test_word_timestamp_requests_record_their_text_rows(make_state):
++    state = make_state()
++    state.alignment = _Capture()
++    state.intermediate_buffer.buffers[1]["word_timestamps"] = True
++    state.add_request(1, _request("a"))
++    state.add_request(2, _request("b"))
++    assert state.align_text[1].tolist() == [TEXT_ROWS.start, len(TEXT_ROWS)]
++    assert state.align_text[2].tolist() == [0, 0]
++    # A text beyond the capture's capacity gets no timestamps (and the slot is reset).
++    state.alignment = _Capture(max_text=1)
++    state.add_request(1, _request("c"))
++    assert state.align_text[1].tolist() == [0, 0] and state._warned_text_len
++
++
++def test_mixed_step_stages_the_text_rows_stash_indices(make_state):
++    state = make_state()
++    state.alignment = _Capture()
++    state._token_pool = state._sample_pool = _HostPool()
++    state.intermediate_buffer.buffers[1]["word_timestamps"] = True
++    state.add_request(1, _request("a"))
++    state.add_request(2, _request("b"))
++    state._flush_slot_writes = lambda: None
++    # Request in slot 1 prefills its whole 4-row prompt, slot 2 decodes one row; 8 padded rows.
++    batch = SimpleNamespace(
++        num_reqs=2,
++        num_tokens=5,
++        num_tokens_after_padding=8,
++        idx_mapping_np=np.array([1, 2]),
++        num_scheduled_tokens=np.array([4, 1]),
++        num_computed_tokens_np=np.array([0, 4]),
++        query_start_loc_np=np.array([0, 4]),
++        req_ids=["a", "b"],
++    )
++    state.prompt_len[2] = 4
++    state.run_preprocess(batch, {})
++    scratch = state.alignment.scratch_slot
++    assert state.alignment.row_slot[:8].tolist() == [scratch, 1, 1, scratch, scratch, scratch, scratch, scratch]
++    assert state.alignment.row_pos[1:3].tolist() == [0, 1]
++    # Both sample rows are valid; only slot 1's request wants timestamps (2 text tokens).
++    assert state._align_rows == [(0, 2)]
++
++
++def test_postprocess_ships_alignment_rows_with_the_frames(make_state):
++    state = make_state()
++    state.alignment = _Capture()
++    state._align_pool = _HostPool()
++    state._valid_rows = [True, True, True]
++    state._align_rows = [(0, 2), (2, 3)]
++    state.alignment.logits[0, :, :2] = 1.0
++    state.alignment.logits[2, :, :3] = 2.0
++    _, snapshot = state.postprocess_model_output(torch.zeros(3, 4), SimpleNamespace(num_reqs=3), None)
++    outputs = snapshot.copy_to_cpu(lambda tensor: tensor.clone())
++    assert isinstance(outputs, RequestOutputSnapshot) and len(outputs.inter_stage) == 3
++    first, second, third = outputs.inter_stage
++    assert set(first) == {"codes.audio", "align.logits"} and set(second) == {"codes.audio"}
++    assert first["align.logits"].shape == (1, 2, 2) and torch.all(first["align.logits"] == 1)
++    assert third["align.logits"].shape == (1, 2, 3) and third["align.logits"].dtype == torch.float16
++    # A request whose row sampled nothing still sends no alignment.
++    state._valid_rows = [False, True, True]
++    state._align_rows = [(1, 2)]
++    _, snapshot = state.postprocess_model_output(torch.zeros(3, 4), SimpleNamespace(num_reqs=3), None)
++    outputs = snapshot.copy_to_cpu(lambda tensor: tensor.clone())
++    assert outputs.inter_stage[0] == {"codes.audio": outputs.inter_stage[0]["codes.audio"]}
++    assert outputs.inter_stage[0]["codes.audio"].shape == (0, 4) and "align.logits" in outputs.inter_stage[1]
++
++
++def test_snapshot_without_partitioning_lists_alignment_per_request():
++    frames = torch.zeros((2, 4), dtype=torch.int64)
++    align = torch.ones((1, 2, 3), dtype=torch.float16)
++    snapshot = ms._FrameRowsSnapshot(frames, [True, True], partitioned=False, align=align, align_rows=[(1, 3)])
++    payload = snapshot.copy_to_cpu(lambda tensor: tensor.clone())
++    assert list(payload) == ["codes", "align"]
++    assert payload["align"]["logits"][0].shape == (0, 2, 0) and payload["align"]["logits"][1].shape == (1, 2, 3)
+diff --git a/tests/model_executor/models/fish_omni/test_fish_omni_prompt.py b/tests/model_executor/models/fish_omni/test_fish_omni_prompt.py
+index 3d6eb6cc5..faa7334c1 100644
+--- a/tests/model_executor/models/fish_omni/test_fish_omni_prompt.py
++++ b/tests/model_executor/models/fish_omni/test_fish_omni_prompt.py
+@@ -137,3 +137,79 @@ def test_prompt_length_matches_frames(frame_counts):
+     references = [Reference(t, torch.randint(0, 64, (n, NUM_CODEBOOKS))) for t, n in zip(transcripts, frame_counts)]
+     rows = int(_build(CharTokenizer(), text, references).shape[0])
+     assert prompt_length(CharTokenizer(), text, transcripts, frame_counts) == rows
++
++
++class TagTokenizer(CharTokenizer):
++    """One id per character, and one control id per leading ``<|speaker:N|>`` tag (like the released tokenizer)."""
++
++    TAG_ID = 0x110000
++
++    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
++        self.calls.append(text)
++        if text.startswith("<|speaker:") and "|>" in text:
++            end = text.index("|>") + 2
++            return [self.TAG_ID + int(text[len("<|speaker:") : end - 2])] + [ord(c) for c in text[end:]]
++        return [ord(c) for c in text]
++
++    def convert_tokens_to_ids(self, token: str) -> int:
++        return self.encode(token)[0]
++
++
++def test_layout_names_the_target_text_rows_without_the_speaker_tag():
++    from vllm_omni.model_executor.models.fish_omni.prompt import build_prompt_layout
++
++    tokenizer = TagTokenizer()
++    codes = torch.zeros((5, NUM_CODEBOOKS), dtype=torch.long)
++    layout = build_prompt_layout(
++        tokenizer,
++        "Hello there.",
++        [Reference("We asked.", codes)],
++        semantic_begin_id=SEMANTIC_BEGIN,
++        num_codebooks=NUM_CODEBOOKS,
++    )
++    assert torch.equal(layout.frames, _build(TagTokenizer(), "Hello there.", [Reference("We asked.", codes)]))
++    # The tag is one row, excluded; the columns are " Hello there." (the first carries the space).
++    assert _decode(layout.frames[list(layout.target_text), 0]) == " Hello there."
++    assert int(layout.frames[layout.target_text.start - 1, 0]) == TagTokenizer.TAG_ID
++    # A caller-supplied tag is excluded the same way; a tokenizer that splits
++    # the tag (plain characters) keeps its rows among the columns.
++    tagged = build_prompt_layout(
++        TagTokenizer(), "<|speaker:3|>Hi.", [], semantic_begin_id=SEMANTIC_BEGIN, num_codebooks=NUM_CODEBOOKS
++    )
++    assert _decode(tagged.frames[list(tagged.target_text), 0]) == "Hi."
++    split = build_prompt_layout(CharTokenizer(), "Hi.", [], semantic_begin_id=SEMANTIC_BEGIN, num_codebooks=NUM_CODEBOOKS)
++    assert _decode(split.frames[list(split.target_text), 0]) == "<|speaker:0|> Hi."
++
++
++
++def _load_drama3_tokenizer():
++    """The cached Drama 3 tokenizer (its snapshot directory, so no config.json or network is needed)."""
++    import glob
++    import os
++
++    from transformers import AutoTokenizer
++
++    root = os.environ.get("HF_HUB_CACHE") or os.path.join(
++        os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")), "hub"
++    )
++    snapshots = sorted(glob.glob(os.path.join(root, "models--fishaudio--drama-3", "snapshots", "*", "tokenizer.json")))
++    if snapshots:
++        return AutoTokenizer.from_pretrained(os.path.dirname(snapshots[-1]))
++    return AutoTokenizer.from_pretrained("fishaudio/drama-3", local_files_only=True)
++
++
++def test_target_text_token_offsets_match_the_layout_columns_with_the_real_tokenizer():
++    from vllm_omni.model_executor.models.fish_omni.prompt import build_prompt_layout, target_text_token_offsets
++
++    try:
++        tokenizer = _load_drama3_tokenizer()
++    except Exception as exc:  # pragma: no cover - offline without the cached tokenizer
++        pytest.skip(f"Drama 3 tokenizer not cached: {exc}")
++    for text in ("Get the trust fund to the bank early.", "  leading spaces and 3,500 dollars!", "<|speaker:2|> Tagged."):
++        layout = build_prompt_layout(tokenizer, text, [], semantic_begin_id=248099, num_codebooks=10)
++        offsets = target_text_token_offsets(tokenizer, text)
++        assert len(offsets) == len(layout.target_text) > 0
++        # Offsets tile the text in order and the tag's own token is gone.
++        assert all(0 <= a <= b <= len(text) for a, b in offsets)
++        assert all(prev[1] <= cur[0] or cur[0] == 0 for prev, cur in zip(offsets, offsets[1:]))
++        assert 248083 <= int(layout.frames[layout.target_text.start - 1, 0]) < 248083 + 16  # the <|speaker:N|> row
+diff --git a/tests/model_executor/stage_input_processors/test_fish_omni_async_chunk.py b/tests/model_executor/stage_input_processors/test_fish_omni_async_chunk.py
+index 3334002e4..fb59277d7 100644
+--- a/tests/model_executor/stage_input_processors/test_fish_omni_async_chunk.py
++++ b/tests/model_executor/stage_input_processors/test_fish_omni_async_chunk.py
+@@ -8,6 +8,7 @@ import numpy as np
+ import pytest
+ import torch
+ 
++from vllm_omni.data_entry_keys import flatten_payload, to_struct, unflatten_payload
+ from vllm_omni.model_executor.stage_input_processors.fish_omni import (
+     SEMANTIC_BEGIN_ID,
+     fish_omni_to_dac_decoder_async_chunk,
+@@ -39,10 +40,26 @@ def _request(req_id="r"):
+     return SimpleNamespace(external_req_id=req_id, is_finished=lambda: False)
+ 
+ 
+-def _frame(index: int, main: int | None = None) -> dict:
++HEADS, TEXT = 2, 3
++
++
++def _frame(index: int, main: int | None = None, align: bool = False) -> dict:
+     codes = torch.arange(CODEBOOKS) + 100 * index
+     row = torch.cat((torch.tensor([SEMANTIC_BEGIN_ID + index if main is None else main]), codes))
+-    return {"codes.audio": row.unsqueeze(0)}
++    output = {"codes.audio": row.unsqueeze(0)}
++    if align:
++        # The step's alignment logits of this frame: [1, heads, text], marked with the frame index.
++        output["align.logits"] = torch.full((1, HEADS, TEXT), float(index), dtype=torch.float16)
++    return output
++
++
++def _alignment(payload) -> list[int] | None:
++    """Frame index of each alignment row of an emitted window (None: no word timestamps)."""
++    rows = payload.codes.alignment
++    if rows is None:
++        return None
++    assert rows.dtype == torch.float16 and rows.ndim == 3 and tuple(rows.shape[1:]) == (HEADS, TEXT)
++    return rows[:, 0, 0].int().tolist()
+ 
+ 
+ def _window(payload) -> tuple[list[int], int]:
+@@ -251,3 +268,84 @@ def test_invalid_ramps_are_rejected_at_the_first_step(extra):
+     manager.connector.config["extra"].update(extra)
+     with pytest.raises(ValueError, match="codec_chunk_ramp"):
+         fish_omni_to_dac_decoder_async_chunk(manager, _frame(0), _request())
++
++
++def test_alignment_rows_ride_with_the_windows_new_frames():
++    manager, request = _manager(), _request()
++    windows = []
++    for index in range(12):
++        payload = fish_omni_to_dac_decoder_async_chunk(manager, _frame(index, align=True), request)
++        if payload is not None:
++            windows.append((_window(payload), _alignment(payload)))
++    # The left context is not repeated: a window's rows are exactly its new frames'.
++    assert windows == [
++        (([0, 1], 0), [0, 1]),
++        (([0, 1, 2, 3, 4], 2), [2, 3, 4]),
++        (([3, 4, 5, 6, 7, 8], 2), [5, 6, 7, 8]),
++    ]
++    # The end-of-speech frame carries no audio and no alignment row.
++    final = fish_omni_to_dac_decoder_async_chunk(manager, _frame(12, main=EOS, align=True), request, is_finished=True)
++    assert _window(final) == ([7, 8, 9, 10, 11], 2) and _alignment(final) == [9, 10, 11]
++
++
++def test_a_stream_without_word_timestamps_carries_no_alignment():
++    manager, request = _manager(ramp="1"), _request()
++    payload = fish_omni_to_dac_decoder_async_chunk(manager, _frame(0), request)
++    assert payload.codes.alignment is None
++    final = fish_omni_to_dac_decoder_async_chunk(manager, None, request, is_finished=True)
++    assert final.codes.alignment is None
++
++
++def test_the_terminal_empty_window_replaces_the_alignment_too():
++    # The receiver keeps a window's codes.* sub-keys until the next window
++    # replaces them, so the empty terminal window carries an empty [0, heads, text].
++    manager, request = _manager(ramp="1"), _request()
++    fish_omni_to_dac_decoder_async_chunk(manager, _frame(0, align=True), request)
++    final = fish_omni_to_dac_decoder_async_chunk(manager, None, request, is_finished=True)
++    assert final.codes.audio.shape == (CODEBOOKS, 0)
++    assert tuple(final.codes.alignment.shape) == (0, HEADS, TEXT) and final.codes.alignment.dtype == torch.float16
++
++
++def test_alignment_rows_are_trimmed_with_the_frames_they_belong_to():
++    manager, request = _manager(ramp="2", chunk=2, left=1), _request()
++    for index in range(40):
++        fish_omni_to_dac_decoder_async_chunk(manager, _frame(index, align=True), request)
++    state = manager.request_payload["r"]["_fish_omni_stream"]
++    assert len(state["align"]) == len(state["codes"]) <= 1 + 2
++
++
++def test_batch_form_carries_the_same_alignment_rows():
++    single, batched = _manager(), _manager()
++    requests = [_request("a"), _request("b")]
++    for index in range(10):
++        outputs = [_frame(index, align=True), _frame(index, main=EOS) if index == 7 else _frame(index)]
++        finished = [False, index == 7]
++        expected = [
++            fish_omni_to_dac_decoder_async_chunk(single, output, request, done)
++            for output, request, done in zip(outputs, requests, finished)
++        ]
++        got = fish_omni_to_dac_decoder_async_chunk_batch(batched, outputs, requests, finished)
++        for want, have in zip(expected, got):
++            assert (want is None) == (have is None)
++            if want is not None:
++                assert _alignment(want) == _alignment(have)
++
++
++def test_window_payload_round_trips_through_the_payload_schema():
++    manager, request = _manager(ramp="2"), _request()
++    fish_omni_to_dac_decoder_async_chunk(manager, _frame(0, align=True), request)
++    payload = fish_omni_to_dac_decoder_async_chunk(manager, _frame(1, align=True), request)
++    nested = {"codes": {"audio": payload.codes.audio, "alignment": payload.codes.alignment}, "meta": {"chunk_seq": 0}}
++    flat = flatten_payload(nested)
++    assert set(flat) == {"codes.audio", "codes.alignment", "meta.chunk_seq"}
++    back = unflatten_payload(flat)
++    struct = to_struct(back)
++    assert torch.equal(struct.codes.alignment, payload.codes.alignment)
++    assert tuple(struct.codes.alignment.shape) == (2, HEADS, TEXT)
++
++
++def test_alignment_is_a_client_facing_output_key():
++    from vllm_omni.utils.mm_outputs import partition_flat_payload
++
++    inter_stage, client = partition_flat_payload({"model_outputs": 1, "alignment": 2, "codes.audio": 3})
++    assert client == {"model_outputs": 1, "alignment": 2} and inter_stage == {"codes.audio": 3}
+diff --git a/tests/test_attention_alignment.py b/tests/test_attention_alignment.py
+new file mode 100644
+index 000000000..b7190dc50
+--- /dev/null
++++ b/tests/test_attention_alignment.py
+@@ -0,0 +1,289 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
++"""Attention-alignment logits -> word timestamps (``vllm_omni.utils.attention_alignment``).
++
++Synthetic matrices with a planted reading path, the literal reference DP, the
++incremental decoder, and the Phase 0 offline decode of one Drama 3 utterance
++(reproduced with the real tokenizer when it is cached).
++"""
++
++import numpy as np
++import pytest
++
++from vllm_omni.utils import attention_alignment as aa
++
++pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
++
++FRAME = aa.FRAME_MS
++
++
++def _dtw_reference(a: np.ndarray) -> np.ndarray:
++    """Literal port of the monotonic path search the kernels implement."""
++    n_steps, n_text = a.shape
++    dp = np.full((n_steps, n_text), aa.NEG)
++    back = np.zeros((n_steps, n_text), dtype=np.int32)
++    dp[0, : min(n_text, 3)] = a[0, : min(n_text, 3)]
++    for i in range(1, n_steps):
++        run, arg = aa.NEG, 0
++        for j in range(n_text):
++            if dp[i - 1, j] > run:
++                run, arg = dp[i - 1, j], j
++            if run > aa.NEG:
++                dp[i, j] = run + a[i, j]
++                back[i, j] = arg
++    path = np.zeros(n_steps, dtype=np.int32)
++    path[-1] = int(dp[-1].argmax())
++    for i in range(n_steps - 1, 0, -1):
++        path[i - 1] = back[i, path[i]]
++    return path
++
++
++def _planted(n_steps: int, n_text: int, heads: int = 3, seed: int = 0, strength: float = 6.0):
++    """Raw logits whose heads read the text in a staircase; returns (logits, planted path)."""
++    rng = np.random.default_rng(seed)
++    path = np.minimum((np.arange(n_steps) * n_text) // n_steps, n_text - 1)
++    logits = rng.normal(0, 1, (n_steps, heads, n_text))
++    logits[np.arange(n_steps), :, path] += strength
++    return logits.astype(np.float32), path
++
++
++def _one_token_per_word(text: str) -> list[tuple[int, int]]:
++    return [(start, end) for start, end, _ in aa.split_words(text)]
++
++
++def test_frame_clock():
++    assert FRAME == pytest.approx(46.44, abs=0.005)
++
++
++@pytest.mark.parametrize("seed", range(4))
++def test_dtw_backends_match_the_reference(seed):
++    rng = np.random.default_rng(seed)
++    # Quantised values make ties, where the back-pointer convention matters.
++    a = np.round(rng.normal(size=(30, 7)) * 2) / 2
++    reference = _dtw_reference(a)
++    assert np.array_equal(aa.dtw_path(a, backend="numpy"), reference)
++    if aa.HAVE_NUMBA:
++        assert np.array_equal(aa.dtw_path(a, backend="numba"), reference)
++    assert np.array_equal(aa.dtw_path(a), reference)
++
++
++def test_reduce_then_dtw_recovers_a_planted_path_and_monotonic_spans():
++    text = "one two three four five six seven eight"
++    logits, planted = _planted(80, 8)
++    fused = aa.reduce_matrix(logits)
++    assert fused.shape == (80, 8) and fused.min() == 0
++    path = aa.dtw_path(fused)
++    assert np.array_equal(path, planted)
++    # The offline (Phase 0) variant with Whisper's time normalisation agrees on a whole utterance.
++    assert np.array_equal(aa.dtw_path(aa.reduce_matrix(logits, time_norm=True)), planted)
++    # A prefix's matrix is the prefix of the matrix, up to the shift to a zero minimum
++    # (not so with time normalisation, whose prefix path wanders off the planted one).
++    prefix = aa.reduce_matrix(logits[:7])
++    assert np.allclose(prefix - prefix.min(), fused[:7] - fused[:7].min())
++    assert np.array_equal(aa.dtw_path(prefix), planted[:7])
++    assert not np.array_equal(aa.dtw_path(aa.reduce_matrix(logits[:7], time_norm=True)), planted[:7])
++    words = aa.words_from_path(path, text, _one_token_per_word(text))
++    assert [w["word"] for w in words] == text.split()
++    starts = [w["start_ms"] for w in words]
++    assert starts == sorted(starts) and starts[0] == 0
++    for current, following in zip(words, words[1:]):
++        assert current["end_ms"] == following["start_ms"]  # contiguous, disjoint
++    assert words[-1]["end_ms"] == pytest.approx(80 * FRAME)
++    assert not any(w.get("interpolated") for w in words)
++
++
++def test_words_from_path_interpolates_skipped_words_and_caps_overlaps():
++    text = "a b c"
++    # Token 1 ("b") is never visited; the path jumps from a to c.
++    path = np.array([0, 0, 2, 2, 2])
++    words = aa.words_from_path(path, text, _one_token_per_word(text))
++    assert words[0]["start_ms"] == 0 and words[0]["end_ms"] == pytest.approx(2 * FRAME)
++    assert words[1]["interpolated"] and words[1]["start_ms"] == words[0]["end_ms"] == words[1]["end_ms"]
++    assert words[2]["start_ms"] == pytest.approx(2 * FRAME) and words[2]["end_ms"] == pytest.approx(5 * FRAME)
++    # Two words sharing one token keep the same span; a word's end is capped
++    # only at a later start.
++    text = "cd ef gh"
++    offsets = [(0, 5), (6, 8)]
++    words = aa.words_from_path(np.array([0, 0, 0, 0, 1]), text, offsets)
++    assert [(w["start_ms"], w["end_ms"]) for w in words[:2]] == [(0, pytest.approx(4 * FRAME))] * 2
++    assert words[2]["start_ms"] == pytest.approx(4 * FRAME)
++    text = "a b"
++    words = aa.words_from_path(np.array([0, 1, 0, 1]), text, [(0, 1), (2, 3)])  # the path cannot go back, but a word may
++    assert words[0]["end_ms"] == words[1]["start_ms"] == pytest.approx(FRAME)
++
++
++def test_tail_silence_is_estimated_from_the_other_words():
++    words = [
++        {"word": "Hello", "start_ms": 0, "end_ms": 300},
++        {"word": "there", "start_ms": 300, "end_ms": 600},
++        {"word": "friend.", "start_ms": 600, "end_ms": 1800},
++    ]
++    # 60 ms per character spoken; "friend." is 7 characters -> 420 ms of speech, the rest silence.
++    assert aa.estimate_tail_silence_ms(words) == pytest.approx(1800 - 600 - 420)
++    assert aa.estimate_tail_silence_ms(words[:2]) == 0.0
++
++
++def test_decoder_streams_final_words_monotonically_and_matches_the_one_shot_decode():
++    text = "one two three four five six seven eight"
++    logits, _ = _planted(80, 8, seed=3)
++    offsets = _one_token_per_word(text)
++
++    one_shot = aa.WordAlignmentDecoder(text, offsets)
++    one_shot.push(logits)
++    expected = one_shot.finish()
++
++    decoder = aa.WordAlignmentDecoder(text, offsets)
++    finals: dict[str, tuple[int, int]] = {}
++    events = []
++    for start in range(0, 80, 7):
++        decoder.push(logits[start : start + 7])
++        words = decoder.update()
++        events.append(words)
++        # Final words first, then the provisional ones; a final word is emitted once.
++        flags = [w["final"] for w in words]
++        assert flags == sorted(flags, reverse=True)
++        for w in words:
++            if w["final"]:
++                assert w["word"] not in finals
++                finals[w["word"]] = (w["start_ms"], w["end_ms"])
++    assert len(finals) >= 5  # most words settled before the end
++    last = decoder.finish()
++    assert [w["word"] for w in last] == text.split() and all(w["final"] for w in last)
++    assert "tail_silence_ms" in last[-1] and "tail_silence_ms" not in last[0]
++    # Frozen words keep their streamed spans; the whole list equals the one-shot decode.
++    for w in last:
++        if w["word"] in finals:
++            assert (w["start_ms"], w["end_ms"]) == finals[w["word"]]
++    assert [(w["word"], w["start_ms"], w["end_ms"]) for w in last] == [
++        (w["word"], w["start_ms"], w["end_ms"]) for w in expected
++    ]
++    assert decoder.frames == 80
++    event = aa.WordAlignmentDecoder.event(last)
++    assert event["type"] == "speech.alignment.delta" and event["resolution_ms"] == 46.44
++
++
++def test_decoder_ignores_empty_rows_and_fails_softly_on_a_text_mismatch():
++    import torch
++
++    decoder = aa.WordAlignmentDecoder("a b", [(0, 1), (2, 3)])
++    decoder.push(None)
++    decoder.push(torch.zeros((0, 1, 1), dtype=torch.float16))  # another request's placeholder
++    decoder.push([torch.zeros((2, 3, 2), dtype=torch.float16)])
++    assert decoder.frames == 2 and decoder.update()
++    bad = aa.WordAlignmentDecoder("a b", [(0, 1), (2, 3)])
++    bad.push(np.zeros((4, 3, 5)))
++    assert bad.failed and bad.update() == [] and bad.finish() == []
++
++
++def test_header_timestamps_are_integers():
++    words = [{"word": "a", "start_ms": 0, "end_ms": 46, "final": True, "tail_silence_ms": 10}]
++    assert aa.header_timestamps(words) == [{"word": "a", "start_ms": 0, "end_ms": 46, "tail_silence_ms": 10}]
++
++
++# ---------------------------------------------------------------------------
++# Phase 0 offline decode of one Drama 3 utterance (timestamps/results/example_req_10.words.json)
++# ---------------------------------------------------------------------------
++
++PHASE0_TEXT = "It is situated across the northeastern rim of the older and larger crater Danjon."
++# Text column per decode step from the Phase 0 DTW (126 steps, 16 target columns).
++PHASE0_PATH = (
++    [0] + [1] * 3 + [2] * 7 + [3] * 11 + [4] * 8 + [5] * 10 + [6] * 12 + [7] * 8 + [8] * 7
++    + [9] * 7 + [10] * 7 + [11] * 8 + [12] * 9 + [13] * 4 + [14] * 7 + [15] * 17
++)
++PHASE0_WORDS = [
++    ("It", 0.0, 46.4), ("is", 46.4, 185.8), ("situated", 185.8, 510.8), ("across", 510.8, 1021.7),
++    ("the", 1021.7, 1393.2), ("northeastern", 1393.2, 1857.6), ("rim", 1857.6, 2414.9), ("of", 2414.9, 2786.4),
++    ("the", 2786.4, 3111.5), ("older", 3111.5, 3436.6), ("and", 3436.6, 3761.6), ("larger", 3761.6, 4133.2),
++    ("crater", 4133.2, 4551.1), ("Danjon.", 4551.1, 5851.4),
++]  # fmt: skip
++
++
++def _phase0_path() -> np.ndarray:
++    path = np.asarray(PHASE0_PATH)
++    assert len(path) == 126 and path.max() == 15
++    return path
++
++
++def test_phase0_example_words_from_the_published_path_with_one_token_per_column():
++    """The Phase 0 spans follow from its path alone, given the words' columns."""
++    # Column -> word as Phase 0 reported it: one column per word, three for "Danjon.".
++    columns = [[j] for j in range(13)] + [[13, 14, 15]]
++    words = aa.split_words(PHASE0_TEXT)
++    offsets = [None] * 16
++    for (start, end, _), cols in zip(words, columns):
++        for col in cols:
++            offsets[col] = (start, end)
++    result = aa.words_from_path(_phase0_path(), PHASE0_TEXT, offsets)
++    assert [(w["word"], round(w["start_ms"], 1), round(w["end_ms"], 1)) for w in result] == PHASE0_WORDS
++
++
++
++def _load_drama3_tokenizer():
++    """The cached Drama 3 tokenizer (its snapshot directory, so no config.json or network is needed)."""
++    import glob
++    import os
++
++    from transformers import AutoTokenizer
++
++    root = os.environ.get("HF_HUB_CACHE") or os.path.join(
++        os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")), "hub"
++    )
++    snapshots = sorted(glob.glob(os.path.join(root, "models--fishaudio--drama-3", "snapshots", "*", "tokenizer.json")))
++    if snapshots:
++        return AutoTokenizer.from_pretrained(os.path.dirname(snapshots[-1]))
++    return AutoTokenizer.from_pretrained("fishaudio/drama-3", local_files_only=True)
++
++
++@pytest.fixture(scope="module")
++def drama3_tokenizer():
++    try:
++        return _load_drama3_tokenizer()
++    except Exception as exc:  # pragma: no cover - offline without the cached tokenizer
++        pytest.skip(f"Drama 3 tokenizer not cached: {exc}")
++
++
++def test_phase0_example_is_reproduced_with_the_real_tokenizer(drama3_tokenizer):
++    from vllm_omni.model_executor.models.fish_omni.prompt import target_text_token_offsets
++
++    offsets = target_text_token_offsets(drama3_tokenizer, PHASE0_TEXT)
++    assert len(offsets) == 16  # the 16 target columns of the Phase 0 request
++    result = aa.words_from_path(_phase0_path(), PHASE0_TEXT, offsets)
++    assert [(w["word"], round(w["start_ms"], 1), round(w["end_ms"], 1)) for w in result] == PHASE0_WORDS
++    decoder = aa.WordAlignmentDecoder(PHASE0_TEXT, offsets)
++    # Planted logits that reproduce the Phase 0 path exactly.
++    logits = np.zeros((126, 6, 16), dtype=np.float32)
++    logits[np.arange(126), :, _phase0_path()] = 8.0
++    decoder.push(logits)
++    final = decoder.finish()
++    # Integer milliseconds against Phase 0's one-decimal values: within 1 ms.
++    assert [w["word"] for w in final] == [word for word, _, _ in PHASE0_WORDS]
++    for got, (_, start, end) in zip(final, PHASE0_WORDS):
++        assert abs(got["start_ms"] - start) <= 1 and abs(got["end_ms"] - end) <= 1
++    # "Danjon." spans 1.3 s of a 5.85 s clip (the audio was 5.80 s): most of it is trailing silence.
++    assert final[-1]["tail_silence_ms"] > 500
++
++
++@pytest.mark.parametrize("window", [1, 3, 7])
++def test_windowed_pushes_give_the_one_shot_spans_and_never_move_a_final_word(window):
++    """The frame base advances by exactly the rows pushed, whatever the window size."""
++    text = "one two three four five six seven eight"
++    logits, _ = _planted(80, 8, seed=5)
++    offsets = _one_token_per_word(text)
++    one_shot = aa.WordAlignmentDecoder(text, offsets)
++    one_shot.push(logits)
++    expected = [(w["word"], w["start_ms"], w["end_ms"]) for w in one_shot.finish()]
++
++    decoder = aa.WordAlignmentDecoder(text, offsets)
++    frozen: dict[str, tuple[int, int]] = {}
++    for start in range(0, 80, window):
++        decoder.push(logits[start : start + window])
++        assert decoder.frames == min(start + window, 80)
++        for w in decoder.update():
++            if w["final"]:
++                frozen[w["word"]] = (w["start_ms"], w["end_ms"])
++            elif w["word"] in frozen:
++                raise AssertionError(f"{w['word']} moved after being final")
++    final = decoder.finish()
++    assert [(w["word"], w["start_ms"], w["end_ms"]) for w in final] == expected
++    assert all((w["start_ms"], w["end_ms"]) == frozen[w["word"]] for w in final if w["word"] in frozen)
++    assert final[-1]["end_ms"] == round(80 * FRAME)
+diff --git a/vllm_omni/data_entry_keys.py b/vllm_omni/data_entry_keys.py
+index 162556abf..d211b99ee 100644
+--- a/vllm_omni/data_entry_keys.py
++++ b/vllm_omni/data_entry_keys.py
+@@ -67,6 +67,9 @@ class Embeddings(TypedDict, total=False):
+ class Codes(TypedDict, total=False):
+     audio: torch.Tensor
+     ref: torch.Tensor
++    # ``[frames, heads, text tokens]`` attention logits of the window's new
++    # frames over the request's text (fish_omni word timestamps).
++    alignment: torch.Tensor
+ 
+ 
+ class Ids(TypedDict, total=False):
+@@ -186,6 +189,7 @@ class EmbeddingsStruct(_StructBase):
+ class CodesStruct(_StructBase):
+     audio: torch.Tensor | None = None
+     ref: torch.Tensor | None = None
++    alignment: torch.Tensor | None = None
+ 
+ 
+ class IdsStruct(_StructBase):
+diff --git a/vllm_omni/deploy/fish_omni_word_timestamps.yaml b/vllm_omni/deploy/fish_omni_word_timestamps.yaml
+new file mode 100644
+index 000000000..e02b6f51a
+--- /dev/null
++++ b/vllm_omni/deploy/fish_omni_word_timestamps.yaml
+@@ -0,0 +1,18 @@
++# Fish Audio Drama 3 with word timestamps from the model's own attention: an
++# overlay on fish_omni.yaml. Stage 0 stashes each request's text keys of the
++# alignment heads' layers (27 and 31) and scores every generated frame against
++# them inside its CUDA graphs; requests with "word_timestamps": true get
++# speech.alignment.delta SSE events (or the X-Word-Timestamps header).
++# Cost: 3 x (max_num_seqs + 1) x 512 x 256 fp16 of stash (~100 MiB at 128
++# sequences) and one small einsum per selected layer per step.
++# Launch: vllm serve fishaudio/drama-3 --omni --deploy-config vllm_omni/deploy/fish_omni_word_timestamps.yaml
++base_config: fish_omni.yaml
++stages:
++  - stage_id: 0
++    hf_overrides:
++      fish_omni_word_timestamps: true
++      # The head set swept for fishaudio/drama-3 (model layer index, head);
++      # re-sweep for another checkpoint. The default is this list.
++      fish_omni_alignment_heads: [[27, 9], [31, 4], [31, 6], [31, 0], [27, 6], [27, 0]]
++      # Text tokens a request may have for timestamps (longer texts get none).
++      fish_omni_alignment_max_text: 512
+diff --git a/vllm_omni/entrypoints/openai/protocol/audio.py b/vllm_omni/entrypoints/openai/protocol/audio.py
+index 2d130baf9..64c1abce4 100644
+--- a/vllm_omni/entrypoints/openai/protocol/audio.py
++++ b/vllm_omni/entrypoints/openai/protocol/audio.py
+@@ -224,9 +224,11 @@ class OpenAICreateSpeechRequest(BaseModel):
+             "When true, non-streaming responses carry per-word timestamps in the "
+             "X-Word-Timestamps header (JSON list of {word, start_ms, end_ms}, "
+             "ASCII-escaped; replaced by X-Word-Timestamps-Omitted past 4 KB). "
+-            "Requires the server to be launched with --forced-aligner (400 otherwise). "
+-            "Not supported with stream=true; for streaming use the WebSocket "
+-            "/v1/audio/speech/stream path."
++            "Requires the server to be launched with --forced-aligner (400 otherwise), "
++            "unless the model times words from its own attention (Fish Audio Drama 3 "
++            "with hf_overrides fish_omni_word_timestamps): then SSE streaming also "
++            "carries speech.alignment.delta events. Otherwise not supported with "
++            "stream=true; for streaming use the WebSocket /v1/audio/speech/stream path."
+         ),
+     )
+ 
+diff --git a/vllm_omni/entrypoints/openai/serving_speech.py b/vllm_omni/entrypoints/openai/serving_speech.py
+index 54b373c64..5a9dcda51 100644
+--- a/vllm_omni/entrypoints/openai/serving_speech.py
++++ b/vllm_omni/entrypoints/openai/serving_speech.py
+@@ -74,6 +74,7 @@ from vllm_omni.entrypoints.openai.tts_adapters.omnivoice import OmniVoiceAdapter
+ from vllm_omni.entrypoints.utils import coerce_param_message_types
+ from vllm_omni.metrics.modality import observe_audio_first_packet, observe_audio_streaming_finalize
+ from vllm_omni.outputs import OmniRequestOutput
++from vllm_omni.utils.attention_alignment import WordAlignmentDecoder, header_timestamps
+ from vllm_omni.utils.speaker_cache import get_speaker_cache
+ 
+ logger = init_logger(__name__)
+@@ -216,6 +217,12 @@ def _infer_audio_num_channels(audio: np.ndarray) -> int:
+     return 1
+ 
+ 
++def _alignment_event(decoder: WordAlignmentDecoder, words: list[dict[str, Any]]) -> str:
++    """One ``speech.alignment.delta`` SSE event."""
++    data = json.dumps(decoder.event(words, decoder.frame_ms), separators=(",", ":"), ensure_ascii=False)
++    return f"event: speech.alignment.delta\ndata: {data}\n\n"
++
++
+ def _audio_format_headers(audio_format: dict[str, int] | None) -> dict[str, str]:
+     """Response headers describing the emitted audio's rate and channel count."""
+     if not audio_format:
+@@ -1773,6 +1780,7 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
+         target_sample_rate: int | None = None,
+         cumulative_audio: bool = False,
+         audio_format: dict[str, int] | None = None,
++        alignment: WordAlignmentDecoder | None = None,
+     ):
+         """Generate audio chunks for streaming response.
+ 
+@@ -1789,6 +1797,10 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
+             audio_format: Optional out-parameter. Before the first audio
+                 chunk is yielded it receives that chunk's ``sample_rate`` and
+                 ``channels``, so callers can describe a raw PCM stream.
++            alignment: Optional word-alignment decoder. Each audio output's
++                ``alignment`` logits are appended to it (an append only, so
++                the audio leaves as early as without it); the caller decodes
++                after yielding the audio.
+ 
+         Yields:
+             Raw audio bytes for each chunk (with WAV header for first chunk if wav format)
+@@ -1854,6 +1866,8 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
+                         collect["aligner_res"] = res
+                     continue
+                 audio_output = cast(dict, audio_output)
++                if alignment is not None:
++                    alignment.push(audio_output.get("alignment"))
+ 
+                 sr_raw = audio_output.get("sr")
+                 if sr_raw is not None:
+@@ -2086,10 +2100,17 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
+         ``speech.audio.done`` schema. ``output_tokens`` is accumulated from the
+         stage-0 deltas as they stream (see ``SpeechOutputTokenCounter``);
+         ``input_tokens`` is computed from the request text + reference audio.
++
++        With ``word_timestamps`` on a model that times words from its own
++        attention, a ``speech.alignment.delta`` event follows each audio delta
++        whose frames settled new words (decoded after the audio is yielded,
++        so first audio is not delayed), and a last one with every word
++        ``final`` precedes ``speech.audio.done``.
+         """
+         usage_acc = SpeechOutputTokenCounter()
+         emitted_audio = False
+         audio_format: dict[str, int] = {}
++        alignment = self._word_alignment_decoder(request, tts_params)
+         try:
+             async with aclosing(
+                 self._generate_audio_chunks(
+@@ -2103,6 +2124,7 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
+                     tts_params=tts_params,
+                     target_sample_rate=request.sample_rate if request is not None else None,
+                     audio_format=audio_format,
++                    alignment=alignment,
+                 )
+             ) as chunks:
+                 async for chunk in chunks:
+@@ -2119,6 +2141,20 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
+                     data = json.dumps(payload, separators=(",", ":"))
+                     emitted_audio = True
+                     yield f"event: speech.audio.delta\ndata: {data}\n\n"
++                    if alignment is not None:
++                        words = alignment.update()
++                        if words:
++                            yield _alignment_event(alignment, words)
++            if alignment is not None:
++                words = alignment.finish()
++                if words:
++                    yield _alignment_event(alignment, words)
++                elif alignment.failed:
++                    logger.warning(
++                        "Word timestamps for %s dropped: alignment rows do not match the text's %d tokens",
++                        request_id,
++                        alignment.n_text,
++                    )
+             done_payload: dict[str, Any] = {"type": "speech.audio.done"}
+             if request is not None:
+                 # Streaming path: output_tokens = sum of stage-0 deltas.
+@@ -2144,6 +2180,22 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
+             data = json.dumps(error_payload, separators=(",", ":"))
+             yield f"event: speech.audio.error\ndata: {data}\n\n"
+ 
++    def _uses_attention_alignment(self, request: OpenAICreateSpeechRequest | None) -> bool:
++        """``word_timestamps`` served from the model's own attention (no forced aligner)."""
++        if request is None or not getattr(request, "word_timestamps", False):
++            return False
++        adapter = self._get_tts_adapter()
++        return adapter is not None and adapter.supports_attention_alignment()
++
++    def _word_alignment_decoder(
++        self, request: OpenAICreateSpeechRequest | None, tts_params: dict[str, Any] | None
++    ) -> WordAlignmentDecoder | None:
++        """The request's word decoder, when its adapter prepared alignment parameters."""
++        params = (tts_params or {}).get("word_alignment")
++        if not isinstance(params, dict) or not self._uses_attention_alignment(request):
++            return None
++        return WordAlignmentDecoder(params["text"], [tuple(pair) for pair in params["offsets"]])
++
+     @staticmethod
+     def _is_timestamps_output(res) -> bool:
+         """True when ``res`` is the forced-aligner stage's terminal timestamps output."""
+@@ -2297,8 +2349,10 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
+         # When word_timestamps is requested, also ask for the aligner stage's
+         # output so the orchestrator drives the request through the forced-aligner
+         # stage (final_stage_id extends to it). Harmless if no aligner stage exists.
++        # A model that aligns words from its own attention ships them with the
++        # audio chunks instead, so its outputs stay as they are.
+         output_modalities = ["audio"]
+-        if getattr(request, "word_timestamps", False):
++        if getattr(request, "word_timestamps", False) and not self._uses_attention_alignment(request):
+             from vllm_omni.model_executor.stage_input_processors.forced_aligner import TIMESTAMPS_MODALITY
+ 
+             output_modalities.append(TIMESTAMPS_MODALITY)
+@@ -2449,9 +2503,17 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
+             raise ValueError("TTS model did not produce audio output.")
+         audio_output = cast(dict, audio_output)
+ 
+-        # Surface forced-aligner word timestamps to the caller (set as a
+-        # response header) when requested and an aligner stage produced them.
+-        if collect is not None and getattr(request, "word_timestamps", False):
++        # Surface word timestamps to the caller (set as a response header)
++        # when requested: from the model's own attention logits that rode
++        # with the audio, else from the forced-aligner stage's output.
++        if collect is not None and (decoder := self._word_alignment_decoder(request, bytes_tts_params)) is not None:
++            decoder.push(audio_output.get("alignment"))
++            words = decoder.finish()
++            if words:
++                collect["word_timestamps"] = header_timestamps(words)
++            else:
++                logger.warning("Word timestamps for %s dropped: no alignment rows matched the text", request_id)
++        elif collect is not None and getattr(request, "word_timestamps", False):
+             from vllm_omni.utils.forced_aligner import extract_word_timestamps
+ 
+             ts = (
+@@ -2790,13 +2852,21 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
+             )
+ 
+         try:
+-            if request.is_streaming() and request.word_timestamps:
++            if self._uses_attention_alignment(request):
++                # Word spans ride the SSE stream (speech.alignment.delta) or
++                # the non-streaming header; raw audio bytes have no room for them.
++                if request.is_raw_audio_stream():
++                    return self.create_error_response(
++                        "word_timestamps=true streams as speech.alignment.delta SSE events: "
++                        "use stream=true (stream_format='sse'), or a non-streaming request."
++                    )
++            elif request.is_streaming() and request.word_timestamps:
+                 return self.create_error_response(
+                     "word_timestamps=true is currently supported by the WebSocket "
+                     "/v1/audio/speech/stream path. Use session.config with "
+                     "stream_audio=true and response_format='pcm'."
+                 )
+-            if request.word_timestamps and not self.forced_aligner_enabled:
++            elif request.word_timestamps and not self.forced_aligner_enabled:
+                 # Fail loud instead of silently returning 200 with no timestamps header.
+                 return self.create_error_response(
+                     "word_timestamps=true requires the server to be launched with --forced-aligner."
+diff --git a/vllm_omni/entrypoints/openai/tts_adapters/base.py b/vllm_omni/entrypoints/openai/tts_adapters/base.py
+index b459fabb1..478d1fe36 100644
+--- a/vllm_omni/entrypoints/openai/tts_adapters/base.py
++++ b/vllm_omni/entrypoints/openai/tts_adapters/base.py
+@@ -381,6 +381,18 @@ class TTSModelAdapter(ABC):
+     def validate_stream_audio(self, *, has_audio: bool) -> None:
+         """Validate audio availability before recording streaming success."""
+ 
++    def supports_attention_alignment(self) -> bool:
++        """Whether the deployed model times words from its own attention.
++
++        Such a model serves ``word_timestamps=true`` without a forced aligner:
++        its stage-0 output carries alignment logits per codec frame, which the
++        speech endpoint decodes into ``speech.alignment.delta`` SSE events (or
++        the ``X-Word-Timestamps`` header). The adapter then puts the request's
++        text and its tokens' character offsets under ``tts_params["word_alignment"]``
++        (see ``vllm_omni.utils.attention_alignment``).
++        """
++        return False
++
+     def collect_response_metadata(self, audio_output: Mapping[str, Any], collect: dict) -> None:
+         """Fold engine-side metadata from the mm payload into ``collect``.
+ 
+diff --git a/vllm_omni/entrypoints/openai/tts_adapters/fish_omni.py b/vllm_omni/entrypoints/openai/tts_adapters/fish_omni.py
+index 2ed5bb6e4..991183a54 100644
+--- a/vllm_omni/entrypoints/openai/tts_adapters/fish_omni.py
++++ b/vllm_omni/entrypoints/openai/tts_adapters/fish_omni.py
+@@ -5,6 +5,10 @@
+ A voice-clone reference arrives as audio (``ref_audio``, encoded in Stage 0)
+ or already encoded (``ref_audio_codes``, ``[codebooks, frames]`` from the
+ model's codec): then nothing is fetched or encoded.
++
++With ``hf_overrides`` ``fish_omni_word_timestamps`` on stage 0 the model
++captures word alignments from its own attention; ``word_timestamps=true``
++then needs no forced aligner (``supports_attention_alignment``).
+ """
+ 
+ import hashlib
+@@ -52,6 +56,32 @@ class FishOmniAdapter(ARTTSAdapter):
+             raise RuntimeError("fish_omni speech requests need the engine client")
+         return self.ctx.engine_client.model_config
+ 
++    def supports_attention_alignment(self) -> bool:
++        from vllm_omni.model_executor.models.fish_omni.alignment import ENABLE_KEY
++
++        try:
++            return bool(getattr(self._model_config().hf_config, ENABLE_KEY, False))
++        except RuntimeError:
++            return False
++
++    def _alignment_max_text(self) -> int:
++        from vllm_omni.model_executor.models.fish_omni.alignment import DEFAULT_MAX_TEXT, MAX_TEXT_KEY
++
++        return int(getattr(self._model_config().hf_config, MAX_TEXT_KEY, DEFAULT_MAX_TEXT))
++
++    def _word_alignment_params(self, text: str) -> dict[str, Any]:
++        """Text and its target-text tokens' character offsets for the server-side word decoder."""
++        from vllm_omni.model_executor.models.fish_omni.prompt import target_text_token_offsets
++
++        offsets = target_text_token_offsets(self._get_tokenizer(), text)
++        limit = self._alignment_max_text()
++        if len(offsets) > limit:
++            raise ValueError(
++                f"word timestamps cover texts of up to {limit} tokens; this text has {len(offsets)} "
++                "(hf_overrides fish_omni_alignment_max_text raises the limit)"
++            )
++        return {"text": text, "offsets": [list(pair) for pair in offsets]}
++
+     def _codebook_sizes(self) -> tuple[int, ...]:
+         """Entries of each codebook of the deployed model's codec (semantic, then residual)."""
+         from vllm_omni.model_executor.models.fish_speech.dac_utils import dac_codebook_sizes
+@@ -85,6 +115,9 @@ class FishOmniAdapter(ARTTSAdapter):
+         from vllm_omni.model_executor.models.fish_omni.fish_omni_model import FishOmniForConditionalGeneration
+ 
+         info: dict[str, Any] = {"text": request.input}
++        if request.word_timestamps and self.supports_attention_alignment():
++            # Stage 0 stashes this request's text keys and scores every frame.
++            info["word_timestamps"] = True
+         if ref_codes is not None:
+             info["ref_text"] = request.ref_text
+             # The model takes reference codes as [frames, codebooks].
+@@ -129,6 +162,16 @@ class FishOmniAdapter(ARTTSAdapter):
+                 return fmt_err
+             if not request.ref_text or not request.ref_text.strip():
+                 return "Voice cloning requires 'ref_text' (transcript of the reference audio)"
++        if (
++            request.word_timestamps
++            and not self.supports_attention_alignment()
++            and not getattr(server, "forced_aligner_enabled", False)
++        ):
++            return (
++                "word_timestamps=true needs stage 0 launched with hf_overrides "
++                "fish_omni_word_timestamps: true (word alignment from the model's attention), "
++                "or the server launched with --forced-aligner"
++            )
+         return self._validate_max_new_tokens(request)
+ 
+     async def build(
+@@ -149,6 +192,8 @@ class FishOmniAdapter(ARTTSAdapter):
+             tts_params["ref_audio_cache_key"] = cache_key
+         try:
+             prompt = await self._build_prompt_async(request, ref_audio_data, has_inline_ref_audio, ref_codes)
++            if request.word_timestamps and self.supports_attention_alignment():
++                tts_params["word_alignment"] = self._word_alignment_params(request.input)
+         except ValueError as exc:
+             raise ValueError(f"Drama 3 request: {exc}") from exc
+         prompt["cache_salt"] = conditioning_cache_salt(request, tts_params)
+diff --git a/vllm_omni/model_executor/models/fish_omni/alignment.py b/vllm_omni/model_executor/models/fish_omni/alignment.py
+new file mode 100644
+index 000000000..1db721319
+--- /dev/null
++++ b/vllm_omni/model_executor/models/fish_omni/alignment.py
+@@ -0,0 +1,277 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
++"""Word alignment from Drama 3's own attention (stage 0, capture side).
++
++A few heads of the backbone's full-attention layers read the target text in
++order while the model voices it. Their attention logits over the text rows,
++one row per generated frame, give word timestamps at the codec's frame rate
++(44100 / 2048 = 21.53 Hz, 46.4 ms) with no aligner, no ASR and no second
++model. The head set was swept offline for ``fishaudio/drama-3``
++(``DEFAULT_ALIGNMENT_HEADS``, ``(layer, head)`` in model layer indices);
++``hf_overrides`` ``fish_omni_alignment_heads`` replaces it.
++
++Stage 0 replays one FULL CUDA graph per decode step, so the capture only
++touches buffers allocated here, with fixed shapes and no host syncs:
++
++* A forward pre-hook on the selected layers' ``self.attn`` (vLLM's
++  ``Attention``) sees the post-norm, post-RoPE ``q`` and ``k`` of every row of
++  the step, exactly as flash attention does.
++* Prompt rows: the target-text rows' ``k`` (the KV heads the selected heads
++  read) go into a per-slot stash ``[slots, kv, max_text, head_dim]`` through
++  two static index buffers the model state fills per step (every other row
++  writes into a scratch slot).
++* Sample rows (one per request): ``q[head] . stash[slot, kv(head)]^T * scale``
++  for the selected heads, one einsum per layer, into ``logits[slot row,
++  head, :max_text]`` (fp32). Raw logits: the server slices ``[0, n_text)``
++  and softmaxes, so columns past a request's text never leak into it.
++
++The stash and the matmul inputs are fp16 (Phase 0 captured in fp16; bf16
++output rounding would cost 8x the precision of the logits). GQA: 16 query
++heads over 2 KV heads, ``kv = head // 8``.
++"""
++
++from __future__ import annotations
++
++from collections.abc import Callable, Iterable, Sequence
++from typing import Any
++
++import torch
++from torch import nn
++from vllm.logger import init_logger
++
++logger = init_logger(__name__)
++
++# Phase 0 head sweep of fishaudio/drama-3 (revision b2b5ee9): the six heads
++# whose path mass x monotonicity x coverage over the target text ranked
++# highest in both the cloned and the zero-shot condition.
++DEFAULT_ALIGNMENT_HEADS: tuple[tuple[int, int], ...] = ((27, 9), (31, 4), (31, 6), (31, 0), (27, 6), (27, 0))
++DEFAULT_MAX_TEXT = 512
++# hf_overrides keys.
++ENABLE_KEY = "fish_omni_word_timestamps"
++HEADS_KEY = "fish_omni_alignment_heads"
++MAX_TEXT_KEY = "fish_omni_alignment_max_text"
++
++
++def parse_alignment_heads(value: Any) -> tuple[tuple[int, int], ...]:
++    """``[[layer, head], ...]``, ``[{"layer": .., "head": ..}, ...]`` or ``"27:9,31:4"``."""
++    if value is None:
++        return DEFAULT_ALIGNMENT_HEADS
++    if isinstance(value, str):
++        items: Iterable[Any] = [part for part in value.replace(";", ",").split(",") if part.strip()]
++    else:
++        items = value
++    heads: list[tuple[int, int]] = []
++    for item in items:
++        if isinstance(item, str):
++            layer, _, head = item.strip().partition(":")
++        elif isinstance(item, dict):
++            layer, head = item["layer"], item["head"]
++        else:
++            layer, head = item
++        heads.append((int(layer), int(head)))
++    if not heads:
++        raise ValueError(f"{HEADS_KEY} names no heads")
++    if len(set(heads)) != len(heads):
++        raise ValueError(f"{HEADS_KEY} repeats a head: {heads}")
++    return tuple(heads)
++
++
++class AlignmentHeadSet:
++    """Selected heads grouped by layer, in the order the logits buffer stores them.
++
++    ``heads`` is the configured set re-ordered by layer (stable), so each
++    layer's heads occupy one contiguous block of the logits buffer. The
++    server averages over heads, so the order never matters downstream.
++    """
++
++    def __init__(self, heads: Sequence[tuple[int, int]], *, num_heads: int, num_kv_heads: int) -> None:
++        if num_heads % num_kv_heads:
++            raise ValueError(f"{num_heads} query heads do not group over {num_kv_heads} KV heads")
++        group = num_heads // num_kv_heads
++        for layer, head in heads:
++            if layer < 0 or not 0 <= head < num_heads:
++                raise ValueError(f"alignment head (layer {layer}, head {head}) is out of range")
++        self.heads = tuple(sorted(heads, key=lambda pair: pair[0]))
++        self.layers = tuple(sorted({layer for layer, _ in heads}))
++        # Per layer: its heads (as positions in ``self.heads``), the KV heads
++        # they read (unique, stash order) and each head's position among them.
++        self.layer_heads: dict[int, list[int]] = {layer: [] for layer in self.layers}
++        self.layer_kv: dict[int, list[int]] = {layer: [] for layer in self.layers}
++        self.layer_kv_pos: dict[int, list[int]] = {layer: [] for layer in self.layers}
++        for index, (layer, head) in enumerate(self.heads):
++            kv = head // group
++            if kv not in self.layer_kv[layer]:
++                self.layer_kv[layer].append(kv)
++            self.layer_heads[layer].append(index)
++            self.layer_kv_pos[layer].append(self.layer_kv[layer].index(kv))
++
++    def __len__(self) -> int:
++        return len(self.heads)
++
++
++class AlignmentCapture:
++    """Static buffers and the per-step maths; one instance per model."""
++
++    def __init__(
++        self,
++        head_set: AlignmentHeadSet,
++        *,
++        max_num_tokens: int,
++        max_num_seqs: int,
++        max_text: int,
++        num_heads: int,
++        num_kv_heads: int,
++        head_dim: int,
++        scaling: float,
++        device: torch.device,
++    ) -> None:
++        self.head_set = head_set
++        self.max_text = int(max_text)
++        self.max_num_seqs = int(max_num_seqs)
++        self.num_heads = int(num_heads)
++        self.num_kv_heads = int(num_kv_heads)
++        self.head_dim = int(head_dim)
++        self.scaling = float(scaling)
++        self.scratch_slot = self.max_num_seqs
++        self.device = device
++        long = dict(dtype=torch.int64, device=device)
++        # Which stash slot and text column each token row of the step writes
++        # (prompt rows of the target text); other rows write the scratch slot.
++        self.row_slot = torch.full((max_num_tokens,), self.scratch_slot, **long)
++        self.row_pos = torch.zeros((max_num_tokens,), **long)
++        self.stash: dict[int, torch.Tensor] = {
++            layer: torch.zeros(
++                (self.max_num_seqs + 1, len(head_set.layer_kv[layer]), self.max_text, self.head_dim),
++                dtype=torch.float16,
++                device=device,
++            )
++            for layer in head_set.layers
++        }
++        self.logits = torch.zeros((self.max_num_seqs, len(head_set), self.max_text), dtype=torch.float32, device=device)
++        self._index: dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = {}
++        for layer in head_set.layers:
++            heads = torch.tensor([head_set.heads[i][1] for i in head_set.layer_heads[layer]], **long)
++            kv = torch.tensor(head_set.layer_kv[layer], **long)
++            pick = torch.arange(len(heads), **long)
++            kv_pos = torch.tensor(head_set.layer_kv_pos[layer], **long)
++            self._index[layer] = (heads, kv, pick, kv_pos)
++        # Set by the model's forward before the backbone runs: the sample-row
++        # count (a SymInt under compile) and the sample rows' token rows / slots.
++        self.num_samples: Any = 0
++        self.sample_rows: torch.Tensor | None = None
++        self.sample_slots: torch.Tensor | None = None
++
++    def begin_step(self, num_samples: Any, sample_rows: torch.Tensor, sample_slots: torch.Tensor) -> None:
++        self.num_samples = num_samples
++        self.sample_rows = sample_rows
++        self.sample_slots = sample_slots
++
++    def capture(self, layer: int, q: torch.Tensor, k: torch.Tensor) -> None:
++        """Stash the step's target-text keys and score the sample rows (one layer).
++
++        ``q`` is ``[rows, num_heads * head_dim]`` and ``k`` ``[rows,
++        num_kv_heads * head_dim]`` for every token row of the step (padding
++        rows included: they write the scratch slot).
++        """
++        heads, kv, pick, kv_pos = self._index[layer]
++        stash = self.stash[layer]
++        n = k.shape[0]
++        keys = k.reshape(n, self.num_kv_heads, self.head_dim)[:, kv].to(torch.float16)  # [n, n_kv, D]
++        stash[self.row_slot[:n], :, self.row_pos[:n]] = keys
++        s = self.num_samples
++        rows = self.sample_rows[:s]
++        slots = self.sample_slots[:s]
++        queries = q[rows].reshape(-1, self.num_heads, self.head_dim)[:, heads].to(torch.float16)  # [S, n_h, D]
++        # All (head, stashed kv) pairs, then each head's own KV head: a handful
++        # of heads, so the extra pairs cost less than a second gather.
++        pairs = torch.einsum("shd,sktd->shkt", queries, stash[slots])  # [S, n_h, n_kv, T]
++        scores = pairs[:, pick, kv_pos].float() * self.scaling  # [S, n_h, T]
++        first = self.head_set.layer_heads[layer][0]
++        self.logits[:s, first : first + len(heads)] = scores
++
++    def extract(self, rows: torch.Tensor, n_text: int) -> torch.Tensor:
++        """Owned fp16 ``[len(rows), heads, n_text]`` of the given sample rows' logits.
++
++        ``rows`` is a device int64 tensor (uploaded without a host sync by the
++        model state, like its other per-step inputs).
++        """
++        return self.logits.index_select(0, rows)[:, :, :n_text].to(torch.float16)
++
++
++def alignment_config(config: Any) -> tuple[bool, tuple[tuple[int, int], ...], int]:
++    """``(enabled, heads, max_text)`` from the HF config (``hf_overrides``)."""
++    enabled = bool(getattr(config, ENABLE_KEY, False))
++    heads = parse_alignment_heads(getattr(config, HEADS_KEY, None))
++    max_text = int(getattr(config, MAX_TEXT_KEY, DEFAULT_MAX_TEXT))
++    if max_text <= 0:
++        raise ValueError(f"{MAX_TEXT_KEY}={max_text}: needs a positive text-column capacity")
++    return enabled, heads, max_text
++
++
++def _layer_index(module: nn.Module, fallback: int) -> int:
++    for name in (getattr(getattr(module, "attn", None), "layer_name", None), getattr(module, "prefix", None)):
++        if isinstance(name, str) and ".layers." in name:
++            try:
++                return int(name.split(".layers.")[1].split(".")[0])
++            except ValueError:
++                pass
++    return fallback
++
++
++def install_alignment_hooks(
++    layers: Sequence[nn.Module],
++    capture: AlignmentCapture,
++    *,
++    attention_attr: str = "self_attn",
++) -> dict[int, Callable[..., Any]]:
++    """Register the capture pre-hook on ``layers[i].<attention_attr>.attn`` of the selected layers.
++
++    Must run before torch.compile / CUDA graph capture: the hooks become part
++    of the traced forward and only touch ``capture``'s static buffers.
++    Returns the hooks by layer index.
++    """
++    hooks: dict[int, Callable[..., Any]] = {}
++    for layer in capture.head_set.layers:
++        if layer >= len(layers):
++            raise ValueError(f"alignment head set names layer {layer}; the backbone has {len(layers)} layers")
++        attention = getattr(layers[layer], attention_attr, None)
++        if attention is None or not hasattr(attention, "attn"):
++            raise ValueError(f"backbone layer {layer} has no full attention ({attention_attr}.attn); choose another head")
++        found = _layer_index(attention, layer)
++        if found != layer:
++            raise ValueError(f"backbone layer {layer} reports layer index {found}")
++        for name, expected in (
++            ("num_heads", capture.num_heads),
++            ("num_kv_heads", capture.num_kv_heads),
++            ("head_dim", capture.head_dim),
++        ):
++            value = getattr(attention, name, expected)
++            if int(value) != expected:
++                raise ValueError(f"backbone layer {layer}: {name}={value}, alignment capture expects {expected}")
++
++        def hook(module: nn.Module, args: tuple[Any, ...], _layer: int = layer) -> None:
++            capture.capture(_layer, args[0], args[1])
++
++        attention.attn.register_forward_pre_hook(hook)
++        hooks[layer] = hook
++    logger.info(
++        "fish_omni: word-timestamp capture on heads %s (max %d text tokens, %.1f MiB of stash)",
++        ", ".join(f"L{layer}H{head}" for layer, head in capture.head_set.heads),
++        capture.max_text,
++        sum(t.numel() * t.element_size() for t in capture.stash.values()) / 2**20,
++    )
++    return hooks
++
++
++__all__ = [
++    "DEFAULT_ALIGNMENT_HEADS",
++    "DEFAULT_MAX_TEXT",
++    "ENABLE_KEY",
++    "HEADS_KEY",
++    "MAX_TEXT_KEY",
++    "AlignmentCapture",
++    "AlignmentHeadSet",
++    "alignment_config",
++    "install_alignment_hooks",
++    "parse_alignment_heads",
++]
+diff --git a/vllm_omni/model_executor/models/fish_omni/fish_omni_model.py b/vllm_omni/model_executor/models/fish_omni/fish_omni_model.py
+index 70e7aabae..0b2b8f06b 100644
+--- a/vllm_omni/model_executor/models/fish_omni/fish_omni_model.py
++++ b/vllm_omni/model_executor/models/fish_omni/fish_omni_model.py
+@@ -49,9 +49,10 @@ from vllm_omni.model_executor.models.fish_speech.dac_encoder import (
+ )
+ from vllm_omni.utils.speaker_cache import get_speaker_cache
+ 
++from .alignment import AlignmentCapture, AlignmentHeadSet, alignment_config, install_alignment_hooks
+ from .codebook_tower import TowerLayer, TowerRotary
+ from .configuration_fish_omni import FishOmniConfig
+-from .prompt import Reference, build_prompt_frames, prompt_length
++from .prompt import PromptLayout, Reference, build_prompt_layout, prompt_length
+ from .sampling import EMPTY_RAS_SLOT, RAS_TOP_K, RAS_WINDOW_FRAMES, FusedFrameSampler
+ 
+ logger = init_logger(__name__)
+@@ -209,6 +210,30 @@ class FishOmniForConditionalGeneration(nn.Module, HasInnerState, IsHybrid):
+ 
+         install_drama3_gdn(self.model)
+ 
++        scheduler_config = vllm_config.scheduler_config
++        device = torch.device(torch.get_default_device())
++        # Word timestamps from the backbone's own attention (hf_overrides
++        # fish_omni_word_timestamps): a pre-hook on the selected layers'
++        # attention fills static buffers, inside the compiled / captured forward.
++        self.alignment: AlignmentCapture | None = None
++        enabled, heads, max_text = alignment_config(config)
++        if enabled:
++            num_heads = int(text_config.num_attention_heads)
++            num_kv_heads = int(text_config.num_key_value_heads)
++            head_dim = int(getattr(text_config, "head_dim", None) or hidden_size // num_heads)
++            self.alignment = AlignmentCapture(
++                AlignmentHeadSet(heads, num_heads=num_heads, num_kv_heads=num_kv_heads),
++                max_num_tokens=scheduler_config.max_num_batched_tokens,
++                max_num_seqs=scheduler_config.max_num_seqs,
++                max_text=max_text,
++                num_heads=num_heads,
++                num_kv_heads=num_kv_heads,
++                head_dim=head_dim,
++                scaling=head_dim**-0.5,
++                device=device,
++            )
++            install_alignment_hooks(self.model.layers, self.alignment)
++
+         # Only end-of-speech and the semantic band are ever sampled: keep those
+         # lm_head rows, which cuts the per-frame head read from 1 GB to 16 MB.
+         candidate_ids = sorted({self.eos_token_id, *range(self.semantic_begin_id, self.semantic_end_id + 1)})
+@@ -241,8 +266,6 @@ class FishOmniForConditionalGeneration(nn.Module, HasInnerState, IsHybrid):
+             nn.Linear(hidden_size, self.codebook_size, bias=False) for _ in range(self.num_codebooks - 1)
+         )
+ 
+-        scheduler_config = vllm_config.scheduler_config
+-        device = torch.device(torch.get_default_device())
+         self.buffers = FishOmniBuffers(
+             max_num_tokens=scheduler_config.max_num_batched_tokens,
+             max_num_seqs=scheduler_config.max_num_seqs,
+@@ -322,6 +345,10 @@ class FishOmniForConditionalGeneration(nn.Module, HasInnerState, IsHybrid):
+ 
+     def build_frames(self, info: dict[str, Any], device: torch.device) -> torch.Tensor:
+         """CPU int64 prompt rows ``[prompt_len, 1 + num_codebooks]`` of a request."""
++        return self.build_layout(info, device).frames
++
++    def build_layout(self, info: dict[str, Any], device: torch.device) -> PromptLayout:
++        """A request's prompt rows and the span of its target text within them."""
+         text = _first(info.get("text"))
+         if not isinstance(text, str) or not text.strip():
+             raise ValueError("fish_omni needs a non-empty 'text'")
+@@ -332,7 +359,7 @@ class FishOmniForConditionalGeneration(nn.Module, HasInnerState, IsHybrid):
+             if not isinstance(transcript, str) or not transcript.strip():
+                 raise ValueError("fish_omni voice cloning needs 'ref_text' with the reference audio")
+             references.append(Reference(transcript, codes))
+-        return build_prompt_frames(
++        return build_prompt_layout(
+             self._get_tokenizer(),
+             text,
+             references,
+@@ -422,6 +449,10 @@ class FishOmniForConditionalGeneration(nn.Module, HasInnerState, IsHybrid):
+         )
+         labels = buffers.labels[:num_tokens]
+ 
++        if self.alignment is not None:
++            # The attention pre-hooks score this step's sample rows against
++            # their requests' stashed text keys (static buffers only).
++            self.alignment.begin_step(num_samples, buffers.sample_rows, buffers.sample_slots)
+         hidden_states = self.model(None, positions, intermediate_tensors, self.backbone_embeddings(frames))
+ 
+         sample_rows = buffers.sample_rows[:num_samples]
+diff --git a/vllm_omni/model_executor/models/fish_omni/model_state.py b/vllm_omni/model_executor/models/fish_omni/model_state.py
+index f412b106a..222628ad0 100644
+--- a/vllm_omni/model_executor/models/fish_omni/model_state.py
++++ b/vllm_omni/model_executor/models/fish_omni/model_state.py
+@@ -39,6 +39,16 @@ logger = init_logger(__name__)
+ _MASK64 = (1 << 64) - 1
+ 
+ 
++def _wants_word_timestamps(info: dict[str, Any]) -> bool:
++    """The request's ``word_timestamps`` flag (a scalar, or a one-element list / tensor)."""
++    value = info.get("word_timestamps", False)
++    if isinstance(value, list):
++        value = value[0] if value else False
++    if isinstance(value, torch.Tensor):
++        return bool(value.reshape(-1)[0].item()) if value.numel() else False
++    return bool(value)
++
++
+ def _frame_seed(seed: int, frame: int) -> int:
+     """Seed of a request's ``frame``-th sampled frame (splitmix64 of seed and index)."""
+     x = (seed * 0x9E3779B97F4A7C15 + frame + 1) & _MASK64
+@@ -48,13 +58,29 @@ def _frame_seed(seed: int, frame: int) -> int:
+ 
+ 
+ class _FrameRowsSnapshot(PackedOutputSnapshot):
+-    """One owned ``[num_reqs, 11]`` frame tensor; rows that sampled nothing are empty."""
++    """One owned ``[num_reqs, 11]`` frame tensor; rows that sampled nothing are empty.
++
++    With word timestamps, ``align`` is an owned ``[k, heads, n_text]`` fp16
++    tensor of the step's alignment logits for the ``k`` sampling rows listed
++    in ``align_rows`` as ``(request index, n_text)``; each such request's
++    output carries its ``[1, heads, n_text]`` row under ``align.logits``.
++    """
+ 
+-    def __init__(self, frames: torch.Tensor, valid: list[bool], *, partitioned: bool) -> None:
+-        dict.__init__(self, {"codes": {"audio": self._rows(frames, valid)}})
++    def __init__(
++        self,
++        frames: torch.Tensor,
++        valid: list[bool],
++        *,
++        partitioned: bool,
++        align: torch.Tensor | None = None,
++        align_rows: list[tuple[int, int]] = (),
++    ) -> None:
+         self._frames = frames
+         self._valid = valid
+         self._partitioned = partitioned
++        self._align = align
++        self._align_rows = list(align_rows)
++        dict.__init__(self, self._payload(frames, align, partitioned=False))
+         self.producer_event = None
+ 
+     @staticmethod
+@@ -62,11 +88,31 @@ class _FrameRowsSnapshot(PackedOutputSnapshot):
+         empty = frames.new_empty((0, frames.shape[-1]))
+         return [row if ok else empty for row, ok in zip(frames.split(1), valid, strict=True)]
+ 
++    def _align_by_request(self, align: torch.Tensor | None) -> dict[int, torch.Tensor]:
++        if align is None:
++            return {}
++        return {req: align[k : k + 1, :, :n_text] for k, (req, n_text) in enumerate(self._align_rows)}
++
++    def _payload(self, frames: torch.Tensor, align: torch.Tensor | None, *, partitioned: bool):
++        rows = self._rows(frames, self._valid)
++        by_request = self._align_by_request(align)
++        if partitioned:
++            outputs = []
++            for index, row in enumerate(rows):
++                output = {"codes.audio": row}
++                if index in by_request:
++                    output["align.logits"] = by_request[index]
++                outputs.append(output)
++            return RequestOutputSnapshot(outputs)
++        payload = {"codes": {"audio": rows}}
++        if by_request:
++            empty = align.new_empty((0, align.shape[1], 0))
++            payload["align"] = {"logits": [by_request.get(index, empty) for index in range(len(rows))]}
++        return payload
++
+     def copy_to_cpu(self, copy_tensor):
+-        rows = self._rows(copy_tensor(self._frames), self._valid)
+-        if self._partitioned:
+-            return RequestOutputSnapshot([{"codes.audio": row} for row in rows])
+-        return {"codes": {"audio": rows}}
++        align = copy_tensor(self._align) if self._align is not None else None
++        return self._payload(copy_tensor(self._frames), align, partitioned=self._partitioned)
+ 
+ 
+ class _SuspendedRequest:
+@@ -118,16 +164,27 @@ class FishOmniModelState(OmniModelState, MambaHybridModelState):
+         self._seeds: dict[str, int] = {}
+         self._seed_generator: torch.Generator | None = None
+         self._suspended: dict[str, _SuspendedRequest] = {}
++        # Word timestamps (model.alignment, None when off): per slot the first
++        # target-text prompt row and the text's token count (0: the request
++        # asked for none, or its text exceeds the capture's capacity); per
++        # step the sampling rows whose alignment logits leave with the frame.
++        self.alignment = getattr(model, "alignment", None)
++        self.align_text = np.zeros((self.max_num_seqs, 2), dtype=np.int64)
++        self._align_rows: list[tuple[int, int]] = []
++        self._warned_text_len = False
+         depth = buffer_utils._DEFAULT_MAX_CONCURRENCY + 2
+         max_tokens = self.buffers.max_num_tokens
+ 
+         def pool(shape, dtype=torch.int64):
+             return buffer_utils.UvaBufferPool(shape, dtype, depth)
+ 
+-        self._token_pool = pool((max_tokens, 2 * self.frame_width + 4))
++        # Per token row: frame | label | slot | from_slot | samples_next |
++        # sample row | alignment stash slot | alignment text column.
++        self._token_pool = pool((max_tokens, 2 * self.frame_width + 6))
+         self._decode_pool = pool((max_tokens, 1))
+         self._sample_pool = pool((self.max_num_seqs, 3))
+         self._slot_pool = pool((self.max_num_seqs, 5 + model.buffers.slot_ras.shape[1]))
++        self._align_pool = pool((self.max_num_seqs, 1))
+         self._last_decode_key: tuple[int, ...] | None = None
+         if not is_uva_available():
+             logger.warning("fish_omni: UVA is unavailable; per-step uploads use staged copies")
+@@ -148,12 +205,30 @@ class FishOmniModelState(OmniModelState, MambaHybridModelState):
+         req_id = str(new_req_data.req_id)
+         prompt_ids = list(new_req_data.prompt_token_ids or [])
+         token_ids = list(new_req_data.prefill_token_ids or prompt_ids)
++        text_rows = range(0, 0)
+         if req_id.startswith("_warmup_"):
+             # Warmup requests: text rows with zero codes.
+             rows = torch.zeros((len(prompt_ids), self.frame_width), dtype=torch.int64)
+             rows[:, 0] = torch.tensor(prompt_ids, dtype=torch.int64)
+         else:
+-            rows = self.model.build_frames(self._request_info(req_index), self.device)
++            info = self._request_info(req_index)
++            layout = self.model.build_layout(info, self.device)
++            rows = layout.frames
++            if self.alignment is not None and _wants_word_timestamps(info):
++                text_rows = layout.target_text
++        self.align_text[req_index] = 0
++        if len(text_rows) > 0:
++            if len(text_rows) <= self.alignment.max_text:
++                self.align_text[req_index] = (text_rows.start, len(text_rows))
++            elif not self._warned_text_len:
++                logger.warning(
++                    "fish_omni: request %s has %d text tokens; word timestamps cover up to %d "
++                    "(hf_overrides fish_omni_alignment_max_text). No timestamps for it.",
++                    req_id,
++                    len(text_rows),
++                    self.alignment.max_text,
++                )
++                self._warned_text_len = True
+         if rows.shape[0] != len(prompt_ids):
+             raise ValueError(
+                 f"fish_omni prompt has {rows.shape[0]} rows but request {req_id} reserved {len(prompt_ids)} "
+@@ -279,6 +354,11 @@ class FishOmniModelState(OmniModelState, MambaHybridModelState):
+         self._valid_rows = valid.tolist()
+         # A sampling row draws the request's frame number last_position + 1 - prompt rows.
+         self._draw_noise(input_batch.req_ids[:num_reqs], last_positions + 1 - self.base_prompt_len[slots], valid)
++        # Sample row i is request i's; its alignment logits leave with the frame it samples.
++        self._align_rows = []
++        if self.alignment is not None:
++            n_text = self.align_text[slots, 1]
++            self._align_rows = [(int(i), int(n_text[i])) for i in np.flatnonzero(valid & (n_text > 0))]
+ 
+         if uniform and not np.any(computed < prompt_len):
+             # Pure decode: every row reads its slot's newest frame and samples.
+@@ -297,6 +377,9 @@ class FishOmniModelState(OmniModelState, MambaHybridModelState):
+                 buffers.token_sample_index[:padded_tokens].copy_(torch.where(sampling, rows, 0))
+                 buffers.sample_rows[:num_samples].copy_(rows[:num_samples])
+                 buffers.sample_valid[:num_samples].copy_(rows[:num_samples] < num_reqs)
++                if self.alignment is not None:
++                    # No prompt rows: every row's keys go to the scratch slot.
++                    self.alignment.row_slot[:padded_tokens].fill_(self.alignment.scratch_slot)
+                 self._last_decode_key = key
+         else:
+             self._stage_mixed_step(input_batch, slots, scheduled, computed, prompt_len, num_samples, valid)
+@@ -330,15 +413,19 @@ class FishOmniModelState(OmniModelState, MambaHybridModelState):
+         padded_tokens = input_batch.num_tokens_after_padding
+         width = self.frame_width
+         # Per token row: frame | label | slot | from_slot | samples_next |
+-        # sample row. Decode rows read their slot's frame and sample; padding
+-        # rows read the dummy slot and sample nothing.
+-        token = np.zeros((padded_tokens, 2 * width + 4), dtype=np.int64)
++        # sample row | alignment stash slot | alignment text column. Decode
++        # rows read their slot's frame and sample; padding rows read the dummy
++        # slot and sample nothing. Only a target-text prompt row of a request
++        # with word timestamps stashes its keys outside the scratch slot.
++        token = np.zeros((padded_tokens, 2 * width + 6), dtype=np.int64)
+         slot_col, from_col, next_col, index_col = 2 * width, 2 * width + 1, 2 * width + 2, 2 * width + 3
++        kslot_col, kpos_col = 2 * width + 4, 2 * width + 5
+         token[:, slot_col] = buffers.dummy_slot
+         token[:, from_col] = 1
+         token[:num_tokens, next_col] = 1
+         token[:num_tokens, slot_col] = np.repeat(slots, scheduled)
+         token[:num_tokens, index_col] = np.repeat(np.arange(num_reqs, dtype=np.int64), scheduled)
++        token[:, kslot_col] = self.alignment.scratch_slot if self.alignment is not None else 0
+         starts = input_batch.query_start_loc_np[:num_reqs]
+         for i in np.flatnonzero(computed < prompt_len).tolist():
+             slot, start, count, done, length = (
+@@ -360,6 +447,12 @@ class FishOmniModelState(OmniModelState, MambaHybridModelState):
+             rows[:, next_col] = 0
+             if end == length:
+                 rows[-1, next_col] = 1
++            text_start, n_text = self.align_text[slot]
++            if n_text > 0:
++                positions = np.arange(done, end)
++                text = (positions >= text_start) & (positions < text_start + n_text)
++                rows[text, kslot_col] = slot
++                rows[text, kpos_col] = positions[text] - text_start
+         # Sample row i is request i's last row; rows past num_reqs pad.
+         sample = np.zeros((num_samples, 3), dtype=np.int64)
+         sample[:, 1] = buffers.dummy_slot
+@@ -377,6 +470,9 @@ class FishOmniModelState(OmniModelState, MambaHybridModelState):
+         buffers.sample_rows[:num_samples].copy_(device_sample[:, 0])
+         buffers.sample_slots[:num_samples].copy_(device_sample[:, 1])
+         buffers.sample_valid[:num_samples].copy_(device_sample[:, 2].bool())
++        if self.alignment is not None:
++            self.alignment.row_slot[:padded_tokens].copy_(device_token[:, kslot_col])
++            self.alignment.row_pos[:padded_tokens].copy_(device_token[:, kpos_col])
+ 
+     # ------------------------------------------------------------------
+     # Outputs
+@@ -400,7 +496,13 @@ class FishOmniModelState(OmniModelState, MambaHybridModelState):
+         num_reqs = input_batch.num_reqs
+         frames = self.buffers.sampled_frames[:num_reqs].clone()
+         valid = self._valid_rows[:num_reqs] if len(self._valid_rows) >= num_reqs else [False] * num_reqs
+-        return hidden, _FrameRowsSnapshot(frames, valid, partitioned=self._partitioned)
++        align = None
++        align_rows = [(row, n_text) for row, n_text in self._align_rows if row < num_reqs]
++        if align_rows:
++            index = np.asarray([[row] for row, _ in align_rows], dtype=np.int64)
++            rows = self._align_pool.copy_to_uva(index).to(self.device, non_blocking=True)[:, 0]
++            align = self.alignment.extract(rows, max(n_text for _, n_text in align_rows))
++        return hidden, _FrameRowsSnapshot(frames, valid, partitioned=self._partitioned, align=align, align_rows=align_rows)
+ 
+ 
+ __all__ = ["FishOmniModelState"]
+diff --git a/vllm_omni/model_executor/models/fish_omni/prompt.py b/vllm_omni/model_executor/models/fish_omni/prompt.py
+index 0d35a6520..cb2b26b5b 100644
+--- a/vllm_omni/model_executor/models/fish_omni/prompt.py
++++ b/vllm_omni/model_executor/models/fish_omni/prompt.py
+@@ -16,6 +16,8 @@ import torch
+ TTS_INSTRUCTION = "convert the provided text to speech"
+ REFERENCE_INSTRUCTION = "convert the provided text to speech reference to the following:"
+ _SPEAKER_TAG = re.compile(r"\s*<\|speaker:(\d+)\|>")
++# The user's text is the only segment whose literal the request supplies alone.
++_TARGET_TEXT = "target_text"
+ 
+ 
+ @dataclass(frozen=True)
+@@ -24,6 +26,21 @@ class Reference:
+     codes: torch.Tensor  # [frames, num_codebooks]
+ 
+ 
++@dataclass(frozen=True)
++class PromptLayout:
++    """Prompt rows and the span of the user's text within them.
++
++    ``target_text`` covers the text tokens of the target segment, without
++    the leading ``<|speaker:N|>`` control token (one token in the released
++    tokenizer), so its first row is the first word (which carries the space
++    after the tag, e.g. ``" Hello"``). These rows are the columns the model's
++    attention reads while voicing the text (word timestamps).
++    """
++
++    frames: torch.Tensor  # [prompt_len, 1 + num_codebooks] CPU int64
++    target_text: range
++
++
+ def with_speaker_tag(text: str) -> str:
+     """Prefix ``<|speaker:0|> `` unless the text already starts with a speaker tag."""
+     if _SPEAKER_TAG.match(text):
+@@ -31,6 +48,11 @@ def with_speaker_tag(text: str) -> str:
+     return f"<|speaker:0|> {text}"
+ 
+ 
++def speaker_tag_match(text: str):
++    """The leading ``<|speaker:N|>`` match (with any leading whitespace), or None."""
++    return _SPEAKER_TAG.match(text)
++
++
+ def _reference_transcript(transcript: str) -> str:
+     """A reference transcript starts with its speaker tag, directly after "Text: "."""
+     match = _SPEAKER_TAG.match(transcript)
+@@ -39,53 +61,116 @@ def _reference_transcript(transcript: str) -> str:
+     return f"<|speaker:{match.group(1)}|>" + transcript[match.end() :]
+ 
+ 
+-def _segments(text: str, references: list[Reference]) -> list[str | torch.Tensor]:
+-    segments: list[str | torch.Tensor] = [
+-        "<|im_start|>system\n",
+-        REFERENCE_INSTRUCTION if references else TTS_INSTRUCTION,
++def _segments(text: str, references: list[Reference]) -> list[tuple[str | None, str | torch.Tensor]]:
++    """``(name, literal or codes)`` in layout order; only the target text is named."""
++    segments: list[tuple[str | None, str | torch.Tensor]] = [
++        (None, "<|im_start|>system\n"),
++        (None, REFERENCE_INSTRUCTION if references else TTS_INSTRUCTION),
+     ]
+     for index, reference in enumerate(references):
+         segments += [
+-            f"\n\n[Reference {index + 1}]\nText: {_reference_transcript(reference.transcript)}\nSpeech: ",
+-            reference.codes,
++            (None, f"\n\n[Reference {index + 1}]\nText: {_reference_transcript(reference.transcript)}\nSpeech: "),
++            (None, reference.codes),
+         ]
+-    segments += ["<|im_end|>\n", "<|im_start|>user\n", with_speaker_tag(text)]
+-    segments += ["<|im_end|>\n", "<|im_start|>assistant\n<|voice|>"]
++    segments += [(None, "<|im_end|>\n"), (None, "<|im_start|>user\n"), (_TARGET_TEXT, with_speaker_tag(text))]
++    segments += [(None, "<|im_end|>\n"), (None, "<|im_start|>assistant\n<|voice|>")]
+     return segments
+ 
+ 
+-def build_prompt_frames(
++def _speaker_tag_tokens(tokenizer, literal: str, ids: list[int]) -> int:
++    """Leading tokens of a target literal that are its ``<|speaker:N|>`` tag.
++
++    The released tokenizer has one control token per tag, found through
++    ``convert_tokens_to_ids``; a tokenizer without that method (or that
++    splits the tag) keeps the tag's tokens among the text columns.
++    """
++    tag = _SPEAKER_TAG.match(literal)
++    convert = getattr(tokenizer, "convert_tokens_to_ids", None)
++    if tag is None or not ids or convert is None:
++        return 0
++    try:
++        tag_id = convert(tag.group(0).strip())
++    except Exception:
++        return 0
++    return 1 if isinstance(tag_id, int) and tag_id == ids[0] else 0
++
++
++def build_prompt_layout(
+     tokenizer,
+     text: str,
+     references: list[Reference],
+     *,
+     semantic_begin_id: int,
+     num_codebooks: int,
+-) -> torch.Tensor:
+-    """CPU int64 rows [prompt_len, 1 + num_codebooks]. Each literal is tokenized on
+-    its own, because tokenizing the joined string changes ids at the seams."""
++) -> PromptLayout:
++    """CPU int64 rows [prompt_len, 1 + num_codebooks] and the target-text span.
++
++    Each literal is tokenized on its own, because tokenizing the joined
++    string changes ids at the seams; this also makes the target-text span
++    exact by construction.
++    """
+     rows: list[torch.Tensor] = []
+-    for segment in _segments(text, references):
++    cursor = 0
++    target = range(0, 0)
++    for name, segment in _segments(text, references):
+         if isinstance(segment, str):
+-            ids = torch.tensor(tokenizer.encode(segment, add_special_tokens=False), dtype=torch.long)
+-            block = torch.zeros((ids.numel(), 1 + num_codebooks), dtype=torch.long)
+-            block[:, 0] = ids
++            ids = tokenizer.encode(segment, add_special_tokens=False)
++            block = torch.zeros((len(ids), 1 + num_codebooks), dtype=torch.long)
++            block[:, 0] = torch.tensor(ids, dtype=torch.long)
++            if name == _TARGET_TEXT:
++                target = range(cursor + _speaker_tag_tokens(tokenizer, segment, ids), cursor + len(ids))
+         else:
+             codes = segment.to(device="cpu", dtype=torch.long)
+             if codes.ndim != 2 or codes.shape[1] != num_codebooks:
+                 raise ValueError(f"reference codes must be [frames, {num_codebooks}], got {tuple(codes.shape)}")
+             block = torch.cat((codes[:, :1] + semantic_begin_id, codes), dim=1)
+         rows.append(block)
+-    return torch.cat(rows)
++        cursor += int(block.shape[0])
++    return PromptLayout(frames=torch.cat(rows), target_text=target)
++
++
++def build_prompt_frames(
++    tokenizer,
++    text: str,
++    references: list[Reference],
++    *,
++    semantic_begin_id: int,
++    num_codebooks: int,
++) -> torch.Tensor:
++    """CPU int64 rows [prompt_len, 1 + num_codebooks] (see ``build_prompt_layout``)."""
++    return build_prompt_layout(
++        tokenizer, text, references, semantic_begin_id=semantic_begin_id, num_codebooks=num_codebooks
++    ).frames
+ 
+ 
+ def prompt_length(tokenizer, text: str, transcripts: list[str], frame_counts: list[int]) -> int:
+     """Prompt rows for the given references without encoding their audio."""
+     total = 0
+     placeholder = [Reference(t, torch.zeros((n, 1), dtype=torch.long)) for t, n in zip(transcripts, frame_counts)]
+-    for segment in _segments(text, placeholder):
++    for _, segment in _segments(text, placeholder):
+         if isinstance(segment, str):
+             total += len(tokenizer.encode(segment, add_special_tokens=False))
+         else:
+             total += int(segment.shape[0])
+     return total
++
++
++def target_text_token_offsets(tokenizer, text: str) -> list[tuple[int, int]]:
++    """Character offsets, relative to ``text``, of each target-text column's token.
++
++    The target segment is tokenized the way ``build_prompt_layout`` tokenizes
++    it (alone, with its speaker tag), so the list has exactly
++    ``len(layout.target_text)`` entries for the same tokenizer. Needs a fast
++    tokenizer (``return_offsets_mapping``). The first token's offsets include
++    the space after the tag and are clamped to the text, so it still overlaps
++    the first word.
++    """
++    literal = with_speaker_tag(text)
++    shift = len(literal) - len(text)
++    encoded = tokenizer(literal, add_special_tokens=False, return_offsets_mapping=True)
++    ids = list(encoded["input_ids"])
++    offsets = [tuple(int(v) for v in pair) for pair in encoded["offset_mapping"]]
++    if ids != list(tokenizer.encode(literal, add_special_tokens=False)):
++        raise RuntimeError("tokenizer(...) and tokenizer.encode(...) disagree on the target text")
++    offsets = offsets[_speaker_tag_tokens(tokenizer, literal, ids) :]
++    return [(max(0, a - shift), max(0, b - shift)) for a, b in offsets]
+diff --git a/vllm_omni/model_executor/models/fish_speech/fish_speech_dac_decoder.py b/vllm_omni/model_executor/models/fish_speech/fish_speech_dac_decoder.py
+index a30d8d789..d12de6bac 100644
+--- a/vllm_omni/model_executor/models/fish_speech/fish_speech_dac_decoder.py
++++ b/vllm_omni/model_executor/models/fish_speech/fish_speech_dac_decoder.py
+@@ -38,6 +38,9 @@ from vllm_omni.platforms import current_omni_platform
+ 
+ logger = init_logger(__name__)
+ 
++# A request without word timestamps in a step where another request has them.
++_NO_ALIGNMENT = torch.zeros((0, 1, 1), dtype=torch.float16)
++
+ 
+ def _connector_extra_config(vllm_config: VllmConfig) -> dict[str, Any]:
+     model_config = getattr(vllm_config, "model_config", None)
+@@ -636,10 +639,25 @@ class FishSpeechDACDecoder(nn.Module):
+             if wav.shape[0] > 0:
+                 audios[idx] = wav.reshape(-1)
+ 
+-        return OmniOutput(
+-            text_hidden_states=None,
+-            multimodal_outputs={"model_outputs": audios, "sr": srs},
+-        )
++        outputs: dict[str, Any] = {"model_outputs": audios, "sr": srs}
++        # Word-alignment logits of the window's new frames (fish_omni word
++        # timestamps) pass through beside the audio they belong to.
++        alignments = [self._alignment_from_runtime_info(runtime_additional_information, i) for i in range(num_req)]
++        if any(alignment is not None for alignment in alignments):
++            outputs["alignment"] = [
++                alignment if alignment is not None else _NO_ALIGNMENT for alignment in alignments
++            ]
++        return OmniOutput(text_hidden_states=None, multimodal_outputs=outputs)
++
++    @staticmethod
++    def _alignment_from_runtime_info(infos: list[dict[str, Any]] | None, index: int) -> torch.Tensor | None:
++        """``codes.alignment`` of a request's window: ``[frames, heads, text]`` fp16 on the host."""
++        info = infos[index] if infos is not None and index < len(infos) else None
++        codes = info.get("codes", {}) if isinstance(info, dict) else {}
++        alignment = codes.get("alignment") if isinstance(codes, dict) else None
++        if not isinstance(alignment, torch.Tensor) or alignment.ndim != 3:
++            return None
++        return alignment.detach().to(device="cpu", dtype=torch.float16)
+ 
+     @staticmethod
+     def _meta_finished(infos: list[dict[str, Any]] | None, index: int) -> bool:
+diff --git a/vllm_omni/model_executor/stage_input_processors/fish_omni.py b/vllm_omni/model_executor/stage_input_processors/fish_omni.py
+index 4c5f4fd66..959791b31 100644
+--- a/vllm_omni/model_executor/stage_input_processors/fish_omni.py
++++ b/vllm_omni/model_executor/stage_input_processors/fish_omni.py
+@@ -11,6 +11,12 @@ decoder trims (or skips, when it keeps the stream's codec state). With
+ ``codec_chunk_ramp_by_load`` a stream's ramp is chosen at its first step from
+ the number of requests in that step (see ``fish_speech.chunk_ramp``). Windows
+ travel as ``[codebooks, frames]`` tensors.
++
++A request with word timestamps also emits, per frame, its attention
++alignment logits over its text (``align.logits``, ``[1, heads, text]``; see
++``fish_omni.alignment``). They travel beside the window's new frames as
++``codes.alignment`` ``[frames, heads, text]`` fp16 (the left context is not
++repeated), so the server can time words as the audio arrives.
+ """
+ 
+ from __future__ import annotations
+@@ -55,7 +61,9 @@ def _state(transfer_manager: Any, request_id: str) -> dict[str, Any]:
+     return transfer_manager.request_payload.setdefault(request_id, {}).setdefault(
+         # ``codes`` holds frames ``base..``: frames no later window reads are dropped.
+         _STATE_KEY,
+-        {"codes": [], "base": 0, "emitted": 0, "windows": 0, "done": False},
++        # ``align`` holds one [heads, text] row per kept frame for a stream
++        # with word timestamps (None otherwise), trimmed with ``codes``.
++        {"codes": [], "align": None, "base": 0, "emitted": 0, "windows": 0, "done": False},
+     )
+ 
+ 
+@@ -92,6 +100,19 @@ def _frames(output: Any) -> torch.Tensor | None:
+     return frames
+ 
+ 
++def _alignment(output: Any) -> torch.Tensor | None:
++    """The step's ``[frames, heads, text]`` alignment logits, if the request has word timestamps."""
++    if not isinstance(output, Mapping):
++        return None
++    align = output.get("align", {})
++    rows = align.get("logits") if isinstance(align, Mapping) else None
++    if rows is None:
++        rows = output.get("align.logits")
++    if not isinstance(rows, torch.Tensor) or rows.ndim != 3:
++        return None
++    return rows
++
++
+ def _semantic(main: np.ndarray) -> np.ndarray:
+     return (main >= SEMANTIC_BEGIN_ID) & (main < SEMANTIC_BEGIN_ID + CODEBOOK_SIZE)
+ 
+@@ -107,13 +128,17 @@ def fish_omni_to_dac_decoder_async_chunk(
+     is_finished: bool = False,
+ ) -> OmniPayloadStruct | None:
+     finished = bool(is_finished or (hasattr(request, "is_finished") and request.is_finished()))
+-    codes = None
++    codes = align = None
+     frames = _frames(multimodal_output)
+     if frames is not None:
+         rows = frames.detach().cpu().numpy().reshape(-1, frames.shape[-1])
+         keep = _semantic(rows[:, 0])
+-        codes = rows[keep, 1:] if keep.any() else None
+-    return _advance(transfer_manager, _request_id(request), codes, finished)
++        if keep.any():
++            codes = rows[keep, 1:]
++            logits = _alignment(multimodal_output)
++            if logits is not None and logits.shape[0] == rows.shape[0]:
++                align = logits.detach().cpu().numpy()[keep]
++    return _advance(transfer_manager, _request_id(request), codes, finished, align=align)
+ 
+ 
+ def fish_omni_to_dac_decoder_async_chunk_batch(
+@@ -135,6 +160,7 @@ def fish_omni_to_dac_decoder_async_chunk_batch(
+             present.append(index)
+             arrays.append(frames.detach().cpu().numpy().reshape(-1, frames.shape[-1]))
+     rows: list[np.ndarray | None] = [None] * len(pooling_outputs)
++    aligns: list[np.ndarray | None] = [None] * len(pooling_outputs)
+     if arrays:
+         stacked = np.concatenate(arrays)
+         keep = _semantic(stacked[:, 0]).tolist()
+@@ -143,14 +169,21 @@ def fish_omni_to_dac_decoder_async_chunk_batch(
+             count = array.shape[0]
+             if count == 1:
+                 rows[index] = stacked[offset : offset + 1, 1:] if keep[offset] else None
++                mask = keep[offset : offset + 1]
+             else:
+                 mask = keep[offset : offset + count]
+                 rows[index] = stacked[offset : offset + count][mask, 1:] if any(mask) else None
++            if rows[index] is not None:
++                logits = _alignment(pooling_outputs[index])
++                if logits is not None and logits.shape[0] == count:
++                    aligns[index] = logits.detach().cpu().numpy()[mask]
+             offset += count
+     # A stream starting in this step sizes its ramp by the step's requests.
+     running = len(requests)
+     return [
+-        _advance(transfer_manager, _request_id(request), rows[index], bool(is_finished[index]), running)
++        _advance(
++            transfer_manager, _request_id(request), rows[index], bool(is_finished[index]), running, align=aligns[index]
++        )
+         for index, request in enumerate(requests)
+     ]
+ 
+@@ -161,6 +194,8 @@ def _advance(
+     codes: np.ndarray | None,
+     finished: bool,
+     running: int | None = None,
++    *,
++    align: np.ndarray | None = None,
+ ) -> OmniPayloadStruct | None:
+     ramps, chunk, left_context = _config(transfer_manager)
+     state = _state(transfer_manager, request_id)
+@@ -169,6 +204,10 @@ def _advance(
+     ramp = _ramp(transfer_manager, state, ramps, running)
+     if codes is not None:
+         state["codes"].extend(codes)
++        if align is not None and state["align"] is None:
++            state["align"] = []
++        if state["align"] is not None:
++            state["align"].extend(_align_rows(align, len(codes), state))
+ 
+     base = state["base"]
+     total = base + len(state["codes"])
+@@ -181,9 +220,13 @@ def _advance(
+         state["done"] = True
+         # Still [codebooks, frames]: the receiver replaces the previous
+         # window's codes only with a 2-D tensor, and a kept window would
+-        # decode again.
++        # decode again. An aligned stream's alignment is replaced too (the
++        # receiver keeps the previous window's otherwise).
+         return OmniPayloadStruct(
+-            codes=CodesStruct(audio=torch.empty((NUM_CODEBOOKS, 0), dtype=torch.long)),
++            codes=CodesStruct(
++                audio=torch.empty((NUM_CODEBOOKS, 0), dtype=torch.long),
++                alignment=_alignment_window(state, 0, 0),
++            ),
+             meta=MetaStruct(finished=torch.tensor(True, dtype=torch.bool)),
+         )
+     end = total if finished else emitted + window
+@@ -192,15 +235,20 @@ def _advance(
+     # chunk 0 (left context alone cannot tell, e.g. with no left context).
+     seq = state["windows"]
+     frames = np.stack(state["codes"][emitted - context - base : end - base])  # [frames, 10]
++    alignment = _alignment_window(state, emitted - base, end - base)
+     state["emitted"] = end
+     state["windows"] += 1
+     done = finished and end == total
+     if done:
+         state["done"] = True
+         state["codes"] = []
++        if state["align"] is not None:
++            state["align"] = []
+     else:
+         keep_from = max(end - left_context, base)
+         del state["codes"][: keep_from - base]
++        if state["align"] is not None:
++            del state["align"][: keep_from - base]
+         state["base"] = keep_from
+     # A [codebooks, frames] tensor: Stage 1 schedules one placeholder token per
+     # window and the decoder reads the codes from runtime info, instead of a
+@@ -209,7 +257,7 @@ def _advance(
+     # transposed strides, which the shared-memory connector cannot view as bytes.
+     codes = torch.from_numpy(np.array(frames.T, dtype=np.int64, order="C", copy=True))
+     return OmniPayloadStruct(
+-        codes=CodesStruct(audio=codes),
++        codes=CodesStruct(audio=codes, alignment=alignment),
+         meta=MetaStruct(
+             left_context_size=context,
+             chunk_seq=seq,
+@@ -218,6 +266,29 @@ def _advance(
+     )
+ 
+ 
++def _align_rows(align: np.ndarray | None, count: int, state: dict[str, Any]) -> list[np.ndarray]:
++    """One ``[heads, text]`` fp16 row per kept frame; zero rows when a step brought none."""
++    if align is not None and align.shape[0] > 0:
++        state["align_shape"] = tuple(align.shape[1:])
++        rows = list(np.asarray(align, dtype=np.float16))
++        if len(rows) >= count:
++            return rows[:count]
++    else:
++        rows = []
++    shape = state.get("align_shape", (1, 1))
++    return rows + [np.zeros(shape, dtype=np.float16)] * (count - len(rows))
++
++
++def _alignment_window(state: dict[str, Any], start: int, end: int) -> torch.Tensor | None:
++    """``[end - start, heads, text]`` fp16 alignment rows of the window's new frames (None: no timestamps)."""
++    if state["align"] is None:
++        return None
++    rows = state["align"][start:end]
++    if rows:
++        return torch.from_numpy(np.stack(rows).astype(np.float16, copy=False))
++    return torch.zeros((0, *state.get("align_shape", (1, 1))), dtype=torch.float16)
++
++
+ # Per-step saves (OmniChunkTransferAdapter.save_async_batch) skip the request
+ # snapshot: this batch form reads only request ids and the finish flags given.
+ fish_omni_to_dac_decoder_async_chunk_batch.per_step_batch = True  # type: ignore[attr-defined]
+diff --git a/vllm_omni/outputs/multimodal_accumulation.py b/vllm_omni/outputs/multimodal_accumulation.py
+index cf579af62..46e148a85 100644
+--- a/vllm_omni/outputs/multimodal_accumulation.py
++++ b/vllm_omni/outputs/multimodal_accumulation.py
+@@ -19,6 +19,17 @@ CHUNK_METADATA_KEYS: frozenset[str] = frozenset(
+ )
+ 
+ 
++# Per-chunk content tensors beside a modality's own key: emitted with the
++# chunk they belong to and drained with it, never carried into the next
++# DELTA output (otherwise a consumer sees the chunks accumulate as a list).
++CHUNK_TENSOR_KEYS: frozenset[str] = frozenset(
++    {
++        # Attention-alignment logits of the chunk's codec frames (fish_omni word timestamps).
++        "alignment",
++    }
++)
++
++
+ def _is_chunk_metadata_key(key: str) -> bool:
+     if key.startswith("meta."):
+         return key.split(".", 1)[1] in CHUNK_METADATA_KEYS
+@@ -38,8 +49,7 @@ def replace_snapshot_keys(
+ 
+ def drain_delta_payload(payload: MultimodalPayload) -> None:
+     """Remove client-facing delta data while retaining request-level state."""
+-    for modality_key in DRAINABLE_MODALITIES:
+-        key = str(modality_key)
++    for key in (*map(str, DRAINABLE_MODALITIES), *CHUNK_TENSOR_KEYS):
+         payload.tensors.pop(key, None)
+         payload.metadata.pop(key, None)
+ 
+diff --git a/vllm_omni/outputs/output_modality.py b/vllm_omni/outputs/output_modality.py
+index df4fa49dc..c3258b4d5 100644
+--- a/vllm_omni/outputs/output_modality.py
++++ b/vllm_omni/outputs/output_modality.py
+@@ -153,6 +153,9 @@ _KEY_ACCUMULATION_OVERRIDES: dict[str, TensorAccumulationStrategy] = {
+         "meta.finished",
+     )
+ }
++# Word-alignment logits beside an audio stream: ``[frames, heads, text]`` per
++# chunk, growing along the frame axis (fish_omni word timestamps).
++_KEY_ACCUMULATION_OVERRIDES["alignment"] = TensorAccumulationStrategy.CONCAT_DIM0
+ 
+ 
+ def register_key_accumulation_strategy(key: str, strategy: TensorAccumulationStrategy) -> None:
+diff --git a/vllm_omni/utils/attention_alignment.py b/vllm_omni/utils/attention_alignment.py
+new file mode 100644
+index 000000000..f5b85e539
+--- /dev/null
++++ b/vllm_omni/utils/attention_alignment.py
+@@ -0,0 +1,421 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
++"""Word timestamps from attention-alignment logits (API server side).
++
++Stage 0 of a model such as Fish Audio Drama 3 (``fish_omni``) captures, per
++generated codec frame, the raw attention logits of a few alignment heads over
++the request's text tokens (``[frames, heads, text]``; see
++``fish_omni/alignment.py``). This module turns them into word spans:
++
++1. ``reduce_matrix``: per head, softmax over the text columns, z-score over
++   time (so one confident head cannot dominate), mean over heads, minus min.
++2. ``dtw_path``: the monotonic path of maximal attention through the fused
++   ``[frames, text]`` matrix (it may stay on a token or move forward, and
++   may start on any of the first three tokens, for leading silence).
++3. ``words_from_path``: token per frame -> span per whitespace word, through
++   the tokenizer's character offsets of the text tokens.
++
++``WordAlignmentDecoder`` runs this incrementally as frames arrive: a word is
++``final`` once the path has moved past its last token; its span is then
++frozen. The last word absorbs the trailing silence (the model keeps reading
++it until end of speech), so the final list adds an estimate of that
++silence, ``tail_silence_ms``, from the utterance's own speaking rate.
++
++Frame clock: frame ``k`` of the codec covers ``[k, k + 1) * frame_ms``; the
++row scored at the step that sampled frame ``k`` is frame ``k``'s row. CPU
++only, numpy; the O(frames x text) path search uses numba when importable.
++"""
++
++from __future__ import annotations
++
++import os
++from collections.abc import Sequence
++from typing import Any
++
++import numpy as np
++
++# Drama 3 / DAC: 44.1 kHz, 2048 samples per frame, one frame per decode step.
++FRAME_MS = 1000.0 * 2048 / 44100
++NEG = -1e9
++EVENT_TYPE = "speech.alignment.delta"
++
++try:  # numba is optional; the numpy path gives the same result
++    if os.environ.get("VLLM_OMNI_ALIGNMENT_NO_NUMBA") == "1":
++        raise ImportError("disabled")
++    import numba as _numba
++
++    HAVE_NUMBA = True
++except Exception:  # pragma: no cover - exercised only without numba
++    _numba = None
++    HAVE_NUMBA = False
++
++
++# ---------------------------------------------------------------------------
++# Matrix reduction and the monotonic path
++# ---------------------------------------------------------------------------
++
++
++def reduce_matrix(raw_logits: np.ndarray, *, time_norm: bool = False) -> np.ndarray:
++    """``[frames, heads, text]`` raw logits -> ``[frames, text]`` fused, path-ready matrix.
++
++    Per head: softmax over the text columns, then the mean over heads. A
++    frame's row depends on that frame alone, so the matrix of a prefix is the
++    prefix of the matrix: what an incremental decoder needs.
++
++    ``time_norm`` adds Whisper's z-score of each column over time before the
++    mean (the offline Phase 0 decode). It equalises heads over a whole
++    utterance but degenerates on a prefix (a column attended in every frame
++    so far scores 0 while unreached columns' noise is amplified), so the
++    serving path leaves it off.
++    """
++    matrix = np.asarray(raw_logits, dtype=np.float64)
++    if matrix.ndim != 3 or 0 in matrix.shape:
++        return np.zeros((0, 0))
++    fused = np.zeros((matrix.shape[0], matrix.shape[2]))
++    for head in range(matrix.shape[1]):
++        a = matrix[:, head, :]
++        a = np.exp(a - a.max(axis=1, keepdims=True))
++        a = a / np.clip(a.sum(axis=1, keepdims=True), 1e-9, None)
++        if time_norm:
++            a = (a - a.mean(0, keepdims=True)) / (a.std(0, keepdims=True) + 1e-8)
++        fused += a
++    fused /= matrix.shape[1]
++    return fused - fused.min()
++
++
++def _dtw_path_numpy(a: np.ndarray) -> np.ndarray:
++    n_steps, n_text = a.shape
++    dp = np.full((n_steps, n_text), NEG)
++    back = np.zeros((n_steps, n_text), dtype=np.int32)
++    k = min(n_text, 3)
++    dp[0, :k] = a[0, :k]
++    index = np.arange(n_text)
++    for i in range(1, n_steps):
++        prev = dp[i - 1]
++        run = np.maximum.accumulate(prev)
++        # The back-pointer is the first column attaining the running maximum.
++        prev_run = np.empty_like(run)
++        prev_run[0] = NEG
++        prev_run[1:] = run[:-1]
++        arg = np.maximum.accumulate(np.where(prev > prev_run, index, 0))
++        ok = run > NEG
++        dp[i] = np.where(ok, run + a[i], NEG)
++        back[i] = np.where(ok, arg, 0)
++    path = np.zeros(n_steps, dtype=np.int32)
++    path[-1] = int(dp[-1].argmax())
++    for i in range(n_steps - 1, 0, -1):
++        path[i - 1] = back[i, path[i]]
++    return path
++
++
++if HAVE_NUMBA:
++
++    @_numba.njit(cache=True, nogil=True)
++    def _dtw_path_numba(a):  # pragma: no cover - compiled
++        n_steps, n_text = a.shape
++        dp = np.full((n_steps, n_text), NEG)
++        back = np.zeros((n_steps, n_text), dtype=np.int32)
++        k = min(n_text, 3)
++        for j in range(k):
++            dp[0, j] = a[0, j]
++        for i in range(1, n_steps):
++            run = NEG
++            arg = 0
++            for j in range(n_text):
++                if dp[i - 1, j] > run:
++                    run = dp[i - 1, j]
++                    arg = j
++                if run > NEG:
++                    dp[i, j] = run + a[i, j]
++                    back[i, j] = arg
++        path = np.zeros(n_steps, dtype=np.int32)
++        best = 0
++        for j in range(1, n_text):
++            if dp[n_steps - 1, j] > dp[n_steps - 1, best]:
++                best = j
++        path[n_steps - 1] = best
++        for i in range(n_steps - 1, 0, -1):
++            path[i - 1] = back[i, path[i]]
++        return path
++
++
++def dtw_path(matrix: np.ndarray, *, backend: str | None = None) -> np.ndarray:
++    """Text column per frame (int32) along the best monotonic path through ``matrix[frames, text]``."""
++    a = np.ascontiguousarray(matrix, dtype=np.float64)
++    if a.ndim != 2:
++        raise ValueError(f"expected a [frames, text] matrix, got shape {a.shape}")
++    if 0 in a.shape:
++        return np.zeros(a.shape[0], dtype=np.int32)
++    if backend is None:
++        backend = "numba" if HAVE_NUMBA else "numpy"
++    if backend == "numba":
++        if not HAVE_NUMBA:
++            raise RuntimeError("numba is not available")
++        return _dtw_path_numba(a)
++    if backend == "numpy":
++        return _dtw_path_numpy(a)
++    raise ValueError(backend)
++
++
++# ---------------------------------------------------------------------------
++# Words
++# ---------------------------------------------------------------------------
++
++
++def split_words(text: str) -> list[tuple[int, int, str]]:
++    """Whitespace-delimited words as ``(char_start, char_end, word)``."""
++    out: list[tuple[int, int, str]] = []
++    start = None
++    for i, ch in enumerate(text):
++        if ch.isspace():
++            if start is not None:
++                out.append((start, i, text[start:i]))
++                start = None
++        elif start is None:
++            start = i
++    if start is not None:
++        out.append((start, len(text), text[start:]))
++    return out
++
++
++def word_columns(text: str, token_offsets: Sequence[tuple[int, int]]) -> list[tuple[str, list[int]]]:
++    """Each word with the text columns (tokens) overlapping it."""
++    words = []
++    for ws, we, word in split_words(text):
++        cols = [j for j, (a, b) in enumerate(token_offsets) if a < we and b > ws]
++        words.append((word, cols))
++    return words
++
++
++def words_from_path(
++    path: np.ndarray,
++    text: str,
++    token_offsets: Sequence[tuple[int, int]],
++    frame_ms: float = FRAME_MS,
++) -> list[dict[str, Any]]:
++    """Path (text column per frame) -> ``[{word, start_ms, end_ms}]`` in text order.
++
++    A word's span runs from the first to the last frame whose column belongs
++    to it; a word the path skips is interpolated between its neighbours
++    (``interpolated: True``). Spans are kept disjoint: a word's end is capped
++    at the next word's start.
++    """
++    path = np.asarray(path, dtype=np.int64)
++    words: list[dict[str, Any]] = []
++    for word, cols in word_columns(text, token_offsets):
++        steps = np.nonzero(np.isin(path, cols))[0] if cols else np.zeros(0, dtype=np.int64)
++        if steps.size == 0:
++            words.append({"word": word, "start_ms": None, "end_ms": None})
++            continue
++        words.append(
++            {
++                "word": word,
++                "start_ms": float(steps.min()) * frame_ms,
++                "end_ms": float(steps.max() + 1) * frame_ms,
++            }
++        )
++    _fill_gaps(words, len(path) * frame_ms)
++    for current, following in zip(words, words[1:]):
++        if following["start_ms"] > current["start_ms"]:
++            current["end_ms"] = min(current["end_ms"], following["start_ms"])
++    return words
++
++
++def _fill_gaps(words: list[dict[str, Any]], total_ms: float) -> None:
++    timed = [i for i, w in enumerate(words) if w["start_ms"] is not None]
++    if not timed:
++        for w in words:
++            w["start_ms"], w["end_ms"], w["interpolated"] = 0.0, total_ms, True
++        return
++    for i, w in enumerate(words):
++        if w["start_ms"] is not None:
++            continue
++        prev = max((j for j in timed if j < i), default=None)
++        nxt = min((j for j in timed if j > i), default=None)
++        lo = words[prev]["end_ms"] if prev is not None else 0.0
++        hi = words[nxt]["start_ms"] if nxt is not None else total_ms
++        w["start_ms"], w["end_ms"], w["interpolated"] = lo, max(lo, hi), True
++
++
++def estimate_tail_silence_ms(words: Sequence[dict[str, Any]]) -> float:
++    """Trailing silence absorbed by the last word, from the other words' speaking rate.
++
++    The attention keeps reading the last token until end of speech, so the
++    last span includes the pause before it. With at least two other timed
++    words, the median duration per character of those words times the last
++    word's length is taken as its spoken duration; the rest of its span is
++    the estimate. 0 when nothing can be estimated.
++    """
++    if len(words) < 3:
++        return 0.0
++    rates = [
++        (w["end_ms"] - w["start_ms"]) / max(1, len(w["word"]))
++        for w in words[:-1]
++        if not w.get("interpolated") and w["end_ms"] > w["start_ms"]
++    ]
++    if len(rates) < 2:
++        return 0.0
++    last = words[-1]
++    spoken = float(np.median(rates)) * max(1, len(last["word"]))
++    return max(0.0, (last["end_ms"] - last["start_ms"]) - spoken)
++
++
++# ---------------------------------------------------------------------------
++# Incremental decoding for a stream
++# ---------------------------------------------------------------------------
++
++
++class WordAlignmentDecoder:
++    """Accumulates alignment rows of one request and emits word spans as they settle.
++
++    ``update()`` after new rows returns the words whose state changed: words
++    that became ``final`` (the path has moved past their last token and on
++    for ``final_lag`` more frames; their spans are frozen from then on) and,
++    after them, the words the path has reached whose spans still move
++    (``final: false``). ``finish()`` returns every word, all final, the last
++    with ``tail_silence_ms``. Milliseconds are integers; the resolution is
++    one frame (``frame_ms``).
++    """
++
++    #: Frames the path must have moved on past a word before it is final:
++    #: the newest frames' assignment can still shift by a frame or two.
++    final_lag = 4
++
++    def __init__(self, text: str, token_offsets: Sequence[tuple[int, int]], *, frame_ms: float = FRAME_MS) -> None:
++        self.text = text
++        self.offsets = [tuple(pair) for pair in token_offsets]
++        self.frame_ms = float(frame_ms)
++        self.n_text = len(self.offsets)
++        self.words = word_columns(text, self.offsets)
++        self._rows: list[np.ndarray] = []
++        self._frames = 0
++        self._frozen: dict[int, tuple[int, int]] = {}
++        self._provisional: dict[int, tuple[int, int]] = {}
++        self._mismatch = False
++
++    @property
++    def frames(self) -> int:
++        return self._frames
++
++    @property
++    def failed(self) -> bool:
++        """The rows did not match the text's token count; no timestamps for this request."""
++        return self._mismatch
++
++    def push(self, rows: Any) -> None:
++        """Add ``[frames, heads, text]`` rows (numpy, torch or a list of either); empty ones are ignored."""
++        if rows is None:
++            return
++        if isinstance(rows, (list, tuple)):
++            for item in rows:
++                self.push(item)
++            return
++        if hasattr(rows, "detach"):
++            rows = rows.detach().to("cpu").float().numpy()
++        array = np.asarray(rows)
++        if array.ndim != 3 or array.shape[0] == 0:
++            return
++        if array.shape[2] != self.n_text:
++            self._mismatch = True
++            return
++        self._rows.append(np.ascontiguousarray(array, dtype=np.float32))
++        self._frames += array.shape[0]
++
++    def _spans(self) -> tuple[list[dict[str, Any]], int] | None:
++        if not self._rows or self._mismatch or self.n_text == 0:
++            return None
++        rows = self._rows[0] if len(self._rows) == 1 else np.concatenate(self._rows)
++        if len(self._rows) > 1:
++            self._rows = [rows]
++        path = dtw_path(reduce_matrix(rows))
++        return words_from_path(path, self.text, self.offsets, self.frame_ms), int(path[-1])
++
++    def _entry(self, index: int, span: tuple[int, int], final: bool) -> dict[str, Any]:
++        return {"word": self.words[index][0], "start_ms": span[0], "end_ms": span[1], "final": final}
++
++    def update(self) -> list[dict[str, Any]]:
++        """Words whose state changed since the last call (see the class docstring)."""
++        result = self._spans()
++        if result is None:
++            return []
++        spans, column = result
++        # The word the path is on: the last word whose tokens it has reached.
++        # Words before it are final once the path is ``final_lag`` frames past
++        # them; up to it, spans are provisional while they still move.
++        reached = [index for index, (_, cols) in enumerate(self.words) if cols and min(cols) <= column]
++        current = max(reached) if reached else 0
++        settled_ms = (self._frames - self.final_lag) * self.frame_ms
++        final: list[dict[str, Any]] = []
++        provisional: list[dict[str, Any]] = []
++        for index in range(min(current + 1, len(self.words))):
++            if index in self._frozen:
++                continue
++            span = self._clamped(index, spans)
++            if index < current and span[1] <= settled_ms:
++                self._frozen[index] = span
++                self._provisional.pop(index, None)
++                final.append(self._entry(index, span, True))
++            elif self._provisional.get(index) != span:
++                self._provisional[index] = span
++                provisional.append(self._entry(index, span, False))
++        return final + provisional
++
++    def _clamped(self, index: int, spans: list[dict[str, Any]]) -> tuple[int, int]:
++        start, end = spans[index]["start_ms"], spans[index]["end_ms"]
++        if index > 0 and (index - 1) in self._frozen:
++            start = max(start, self._frozen[index - 1][1])
++        end = max(end, start)
++        return int(round(start)), int(round(end))
++
++    def finish(self) -> list[dict[str, Any]]:
++        """Every word, final; the last word carries ``tail_silence_ms``."""
++        result = self._spans()
++        if result is None:
++            return []
++        spans, _ = result
++        out: list[dict[str, Any]] = []
++        for index in range(len(self.words)):
++            span = self._frozen.get(index) or self._clamped(index, spans)
++            self._frozen[index] = span
++            entry = self._entry(index, span, True)
++            if spans[index].get("interpolated"):
++                entry["interpolated"] = True
++            out.append(entry)
++        if out:
++            timed = [
++                {"word": w["word"], "start_ms": w["start_ms"], "end_ms": w["end_ms"], "interpolated": w.get("interpolated")}
++                for w in out
++            ]
++            out[-1]["tail_silence_ms"] = int(round(estimate_tail_silence_ms(timed)))
++        return out
++
++    @staticmethod
++    def event(words: Sequence[dict[str, Any]], frame_ms: float = FRAME_MS) -> dict[str, Any]:
++        """The ``speech.alignment.delta`` SSE payload for ``words``."""
++        return {"type": EVENT_TYPE, "words": list(words), "resolution_ms": round(frame_ms, 2)}
++
++
++def header_timestamps(words: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
++    """The ``X-Word-Timestamps`` form: ``{word, start_ms, end_ms}`` (+ ``tail_silence_ms`` on the last word)."""
++    out = []
++    for w in words:
++        entry = {"word": w["word"], "start_ms": int(w["start_ms"]), "end_ms": int(w["end_ms"])}
++        if "tail_silence_ms" in w:
++            entry["tail_silence_ms"] = int(w["tail_silence_ms"])
++        out.append(entry)
++    return out
++
++
++__all__ = [
++    "EVENT_TYPE",
++    "FRAME_MS",
++    "HAVE_NUMBA",
++    "WordAlignmentDecoder",
++    "dtw_path",
++    "estimate_tail_silence_ms",
++    "header_timestamps",
++    "reduce_matrix",
++    "split_words",
++    "word_columns",
++    "words_from_path",
++]
+diff --git a/vllm_omni/utils/mm_outputs.py b/vllm_omni/utils/mm_outputs.py
+index ccdb040df..50da7d890 100644
+--- a/vllm_omni/utils/mm_outputs.py
++++ b/vllm_omni/utils/mm_outputs.py
+@@ -19,6 +19,8 @@ _CLIENT_MM_ROOT_KEYS: frozenset[str] = frozenset(
+         "audio",
+         # The codec frames a code2wav stage decoded, beside the audio they cover.
+         "codec_frames",
++        # Attention-alignment logits of the audio's frames (fish_omni word timestamps).
++        "alignment",
+         "image",
+         "images",
+         "video",
